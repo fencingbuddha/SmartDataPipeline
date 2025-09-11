@@ -5,6 +5,21 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.models import Source, RawEvent, CleanEvent
+from datetime import datetime
+import numpy as np
+from datetime import datetime
+
+def _native(v):
+    # Normalize Pandas/NumPy/datetime to JSON-safe Python types
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return v.isoformat()
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        return float(v)
+    if pd.isna(v):
+        return None
+    return v
 
 def _get_or_create_source(db: Session, source_name: str) -> Source:
     src = db.execute(select(Source).where(Source.name == source_name)).scalar_one_or_none()
@@ -51,11 +66,14 @@ def ingest_file(db: Session, source_name: str, file_bytes: bytes, content_type: 
     # stage: raw_events
     raw_count = 0
     for _, r in df_raw.iterrows():
+        raw_payload = {k: _native(v) for k, v in r.to_dict().items()}
         db.add(RawEvent(
             source_id=src.id, 
             filename=filename,
             content_type=content_type,
-            payload=r.to_dict()))
+            payload=raw_payload,
+            received_at=datetime.utcnow(),
+            ))
         raw_count += 1
 
     # load: clean_events
