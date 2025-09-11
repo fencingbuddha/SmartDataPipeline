@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, 
 from sqlalchemy.orm import Session
 from typing import List, Dict
 import csv, io, json
+from datetime import datetime
 
 from app.db.session import SessionLocal
 from app.models import Source, RawEvent
@@ -73,10 +74,11 @@ async def upload(
             filename=file.filename,
             content_type=file.content_type or "application/octet-stream",
             payload=row,
+            received_at=datetime.utcnow()
         )
         for row in rows
     ]
-    db.bulk_save_objects(objs)
+    db.add_all(objs)
     db.commit()
 
     return {
