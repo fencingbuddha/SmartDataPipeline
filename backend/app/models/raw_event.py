@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from app.db.base import Base
 
 
@@ -22,7 +23,7 @@ class RawEvent(Base):
     )
     received_at = Column(
         DateTime,
-        default=datetime.utcnow,
+        server_default=func.now(),
         nullable=False,
         index=True,
     )
