@@ -18,9 +18,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Inject DB URL from your app settings (overrides alembic.ini)
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Prefer DATABASE_URL from the environment; fallback to app settings
+url = os.getenv("DATABASE_URL") or get_settings().DATABASE_URL
+config.set_main_option("sqlalchemy.url", url)
+
 
 # Metadata for autogenerate
 target_metadata = Base.metadata
