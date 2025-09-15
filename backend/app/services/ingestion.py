@@ -4,10 +4,10 @@ import pandas as pd
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from app.models import Source, RawEvent, CleanEvent
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
-from datetime import datetime
 
 def _native(v):
     # Normalize Pandas/NumPy/datetime to JSON-safe Python types
@@ -68,23 +68,43 @@ def ingest_file(db: Session, source_name: str, file_bytes: bytes, content_type: 
     for _, r in df_raw.iterrows():
         raw_payload = {k: _native(v) for k, v in r.to_dict().items()}
         db.add(RawEvent(
-            source_id=src.id, 
+            source_id=src.id,
             filename=filename,
             content_type=content_type,
             payload=raw_payload,
             received_at=datetime.utcnow(),
-            ))
+        ))
         raw_count += 1
 
-    # load: clean_events
-    clean_count = 0
+    # build rows for bulk upsert into clean_events (idempotent)
+    rows_clean = []
     for _, r in norm.iterrows():
-        db.add(CleanEvent(
-            source_id=src.id,
-            ts=r["timestamp"].to_pydatetime(),
-            metric=str(r["metric"]),
-            value=float(r["value"])
-        ))
-        clean_count += 1
+        ts_val = r["timestamp"]
+        if isinstance(ts_val, pd.Timestamp):
+            # ensure tz-aware UTC
+            if ts_val.tzinfo is None:
+                ts_val = ts_val.tz_localize("UTC")
+            ts_py = ts_val.to_pydatetime()
+        else:
+            # python datetime
+            ts_py = ts_val
+            if ts_py.tzinfo is None:
+                ts_py = ts_py.replace(tzinfo=timezone.utc)
 
+        rows_clean.append({
+            "source_id": src.id,
+            "ts": ts_py,
+            "metric": str(r["metric"]),
+            "value": float(r["value"]),
+        })
+
+    clean_count = 0
+    if rows_clean:
+        stmt = insert(CleanEvent).values(rows_clean).on_conflict_do_nothing(
+            index_elements=["source_id", "ts", "metric"]
+        )
+        result = db.execute(stmt)
+        clean_count = result.rowcount or 0
+
+    db.commit()
     return raw_count, clean_count

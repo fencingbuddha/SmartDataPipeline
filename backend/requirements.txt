@@ -4,3 +4,5 @@ python-dotenv>=1.0.1
 pydantic-settings>=2.3.4
 SQLAlchemy>=2.0.30
 psycopg2-binary>=2.9.9
+pytest-env==1.1.3
+
