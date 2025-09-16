@@ -1,5 +1,7 @@
 # Smart Data Pipeline & Dashboard
 
+![CI](https://github.com/fencingbuddha/SmartDataPipeline/actions/workflows/ci.yml/badge.svg?branch=main)
+
 **CSV/JSON → ETL → KPIs → Anomalies → Forecasts → Interactive Dashboard**
 
 A lightweight analytics platform that ingests raw datasets, automates KPI calculation, detects anomalies, forecasts trends, and visualizes results in a React dashboard.  
