@@ -2,8 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, 
 from sqlalchemy.orm import Session
 from typing import List, Dict
 import csv, io, json
-from datetime import datetime
-
+from datetime import datetime, timezone
 from app.db.session import SessionLocal
 from app.models import Source, RawEvent
 
@@ -74,7 +73,7 @@ async def upload(
             filename=file.filename,
             content_type=file.content_type or "application/octet-stream",
             payload=row,
-            received_at=datetime.utcnow()
+            received_at=datetime.now(timezone.utc)
         )
         for row in rows
     ]

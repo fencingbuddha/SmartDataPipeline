@@ -1,8 +1,6 @@
-# backend/tests/test_kpi.py
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from fastapi.testclient import TestClient
 import sqlalchemy as sa
-
 from app.main import app
 from app.db.session import SessionLocal
 from app.models.source import Source
@@ -28,7 +26,7 @@ def test_kpi_happy_path():
         _reset(db)
         _ensure_source(db, 1)
 
-        base = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        base = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
         rows = [
             CleanEvent(ts=base - timedelta(days=1, hours=1), source_id=1, metric="orders", value=10),
             CleanEvent(ts=base - timedelta(days=1, hours=2), source_id=1, metric="orders", value=20),
