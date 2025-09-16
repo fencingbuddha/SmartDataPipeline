@@ -12,16 +12,16 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_DB: smartdata_test
-        # expose container 5432 on host 5433 to match your pytest.ini
+        # Map container 5432 -> host 5433 to match pytest.ini
         ports: ["5433:5432"]
         options: >-
           --health-cmd="pg_isready -U postgres"
           --health-interval=5s --health-timeout=5s --health-retries=10
 
     env:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test
+      DATABASE_URL: postgresql+psycopg2://postgres:${{ secrets.POSTGRES_PASSWORD }}@localhost:5433/smartdata_test
       PYTHONWARNINGS: default
 
     steps:
@@ -34,11 +34,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest-cov
-      # If you prefer migrations over create_all in tests, uncomment:
       # - name: Run migrations
       #   working-directory: backend
       #   run: alembic upgrade head
       - name: Run tests
         working-directory: backend
         run: pytest -q --cov=app/services --cov-report=term-missing
-
