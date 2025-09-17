@@ -7,6 +7,3 @@ app.include_router(health.router)
 app.include_router(upload.router)
 app.include_router(kpi.router)
 app.include_router(ingest.router)
-
-def health():
-    return {"status": "ok"}
