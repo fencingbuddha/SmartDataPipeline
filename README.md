@@ -109,7 +109,7 @@ Create `backend/.env` (adjust port/creds if yours differ, e.g. 5432 vs 5433):
 ENV=dev
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata
 TEST_DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test
-
+```
 ---
 
 ## 🚀 Getting Started
