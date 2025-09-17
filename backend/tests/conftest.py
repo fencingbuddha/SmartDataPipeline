@@ -1,79 +1,60 @@
 import os
+import importlib
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-from app.main import app
-from app.db.session import engine, SessionLocal
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
+TEST_DB_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test",
+)
+
+for mod in (
+    "app.models.source",
+    "app.models.clean_event",
+    "app.models.metric_daily",
+    "app.models.raw_upload",
+    "app.models.raw_event",
+):
+    try:
+        importlib.import_module(mod)
+    except Exception:
+        pass
+
 from app.db.base import Base
-import app.models
 
 
-# ---------- Create schema once per test session ----------
-@pytest.fixture(scope="session", autouse=True)
-def _create_schema_once():
-    Base.metadata.create_all(bind=engine)
+@pytest.fixture(scope="session")
+def engine():
+    eng = create_engine(TEST_DB_URL, future=True)
+    # start from a clean slate
+    Base.metadata.drop_all(eng)
+    Base.metadata.create_all(eng)
+    return eng
 
 
-# ---------- Clean tables before each test (dialect-aware, dynamic) ----------
-@pytest.fixture(autouse=True)
-def clean_db():
-    dialect = engine.dialect.name  # 'postgresql' or 'sqlite'
-    # Build table list dynamically from metadata
-    table_names = [t.name for t in Base.metadata.sorted_tables]
-    if not table_names:
-        yield
-        return
+@pytest.fixture()
+def db(engine):
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
 
-    with engine.begin() as conn:
-        if dialect == "postgresql":
-            # TRUNCATE all known tables in one shot, reset identities, cascade FKs
-            tables_csv = ", ".join(table_names)
-            conn.execute(
-                text(f"TRUNCATE TABLE {tables_csv} RESTART IDENTITY CASCADE")
-            )
-        else:
-            # SQLite (no TRUNCATE): delete from each table
-            # Delete in reverse dependency order to avoid FK issues
-            for t in reversed(Base.metadata.sorted_tables):
-                conn.execute(text(f"DELETE FROM {t.name}"))
+
+@pytest.fixture()
+def reset_db(engine):
+    """
+    Per-test clean DB. Drop & recreate all tables so constraints and sequences reset.
+    (Slower but simplest & most reliable for now.)
+    """
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
     yield
 
-
-# ---------- FastAPI DB dependency override (optional but recommended) ----------
-def _override_get_db():
-    db: Session = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def _try_set_dependency_override():
-    try:
-        from app.deps import get_db as _get_db  # type: ignore
-        app.dependency_overrides[_get_db] = _override_get_db
-        return
-    except Exception:
-        pass
-
-    try:
-        from app.db.session import get_db as _get_db  # type: ignore
-        app.dependency_overrides[_get_db] = _override_get_db
-        return
-    except Exception:
-        pass
-
-@pytest.fixture()
-def reset_db(clean_db):
-    yield 
-
-@pytest.fixture()
-def client():
-    _try_set_dependency_override()
-    c = TestClient(app)
-    try:
-        yield c
-    finally:
-        # prevent bleed-over across tests
-        app.dependency_overrides = {}
+@pytest.fixture(autouse=True)
+def _auto_reset(reset_db):
+    """Drop & recreate all tables before every test for full isolation."""
+    pass
