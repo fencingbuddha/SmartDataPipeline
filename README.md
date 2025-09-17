@@ -96,6 +96,22 @@ SmartDataPipeline/
 
 ---
 
+## 🗃️ Databases: Dev vs Test (and `.env`)
+
+This project uses **two Postgres databases** so development and tests don’t step on each other:
+
+- **Dev (runtime app):** `DATABASE_URL` → typically `.../smartdata`
+- **Test (pytest only):** `TEST_DATABASE_URL` → typically `.../smartdata_test`
+
+Create `backend/.env` (adjust port/creds if yours differ, e.g. 5432 vs 5433):
+
+```ini
+ENV=dev
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata
+TEST_DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test
+
+---
+
 ## 🚀 Getting Started
 
 **Prerequisites**
