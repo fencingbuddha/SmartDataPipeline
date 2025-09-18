@@ -1,11 +1,11 @@
-# backend/app/routers/metrics.py
 from __future__ import annotations
 from datetime import date
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.metrics import fetch_metric_daily
+from typing import Literal
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -22,6 +22,7 @@ def get_metric_daily(
     metric: str | None = Query(None),
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
+     agg: Literal["sum", "avg", "count"] = Query("sum"),
     limit: int = Query(1000, ge=1, le=10_000),
     db: Session = Depends(get_db),
 ):
@@ -33,4 +34,12 @@ def get_metric_daily(
         end_date=end_date,
         limit=limit,
     )
-    return rows  # FastAPI + Pydantic will serialize via from_attributes
+    if agg == "sum":
+        return rows  # uses hybrid .value -> value_sum
+
+    # remap value from other aggregates
+    out = []
+    for r in rows:
+        v = float(r.value_avg) if agg == "avg" else float(r.value_count)
+        out.append({"metric_date": r.metric_date, "source_id": r.source_id, "metric": r.metric, "value": v})
+    return out
