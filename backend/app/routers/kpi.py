@@ -2,7 +2,6 @@ from __future__ import annotations
 from datetime import date
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-
 from app.db.session import get_db
 from app.services.kpi import run_daily_kpis
 
