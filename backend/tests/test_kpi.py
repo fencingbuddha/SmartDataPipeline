@@ -26,7 +26,7 @@ def test_kpi_happy_path():
         _reset(db)
         _ensure_source(db, 1)
 
-        base = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        base = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
         rows = [
             CleanEvent(ts=base - timedelta(days=1, hours=1), source_id=1, metric="orders", value=10),
             CleanEvent(ts=base - timedelta(days=1, hours=2), source_id=1, metric="orders", value=20),
@@ -41,7 +41,8 @@ def test_kpi_happy_path():
         data = resp.json()
         assert data["rows_upserted"] >= 2  # yesterday + today
 
-        res = db.execute(sa.select(MetricDaily)).scalars().all()
+        with SessionLocal() as check:
+            res = check.execute(sa.select(MetricDaily)).scalars().all()
         # find yesterday
         yesterday = (base - timedelta(days=1)).date()
         md = next(r for r in res if r.metric_date == yesterday and r.metric == "orders")
