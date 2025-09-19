@@ -1,153 +1,158 @@
-from datetime import date, datetime, time, timedelta
-from typing import Optional, Tuple, List
-
+from __future__ import annotations
+from datetime import date, datetime, time, timedelta, timezone
+from collections import defaultdict
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
+from app.models import CleanEvent, MetricDaily
 
-from app.models.clean_event import CleanEvent
-from app.models.metric_daily import MetricDaily
-
-def _get_timestamp_col():
-    """
-    Return the timestamp column from CleanEvent, preferring common names.
-    Raises if none are found.
-    """
-    for cand in ("occurred_at", "event_time", "created_at", "timestamp", "ts"):
-        if hasattr(CleanEvent, cand):
-            return getattr(CleanEvent, cand)
-    raise RuntimeError(
-        "CleanEvent timestamp column not found. "
-        "Expected one of: occurred_at, event_time, created_at, timestamp, ts."
-    )
-
-
-def _is_numeric_column(attr) -> bool:
-    """Best-effort check whether a mapped column is numeric."""
-    try:
-        col = attr.property.columns[0]  # InstrumentedAttribute -> Column
-        from sqlalchemy.sql.sqltypes import (Integer, BigInteger, SmallInteger, Float, Numeric, DECIMAL)
-        return isinstance(col.type, (Integer, BigInteger, SmallInteger, Float, Numeric, DECIMAL))
-    except Exception:
-        return False
-
+def _utc_floor(d: date) -> datetime:
+    return datetime.combine(d, time(0, 0, 0, tzinfo=timezone.utc))
 
 def run_daily_kpis(
     db: Session,
-    start: Optional[date] = None,
-    end: Optional[date] = None,
-    *,
-    metric_name: Optional[str] = None,  # <- NEW: optional override only used if CleanEvent.metric doesn't exist
-) -> Tuple[int, List[dict]]:
-    """
-    Aggregate CleanEvents into MetricDaily with COUNT/SUM/AVG per (date, source_id, metric).
-
-    - value_count = COUNT(*)
-    - value_sum   = COALESCE(SUM(value), 0)   (only if value is numeric)
-    - value_avg   = COALESCE(AVG(value), 0)   (only if value is numeric)
-
-    Date window is inclusive at the day level: [start..end].
-    Returns (rows_upserted, preview_rows[:10]).
-    """
-    if start and end and end < start:
+    start: date | None = None,
+    end: date | None = None,
+    metric_name: str | None = None,
+    source_id: int | None = None,
+) -> tuple[int, list[dict]]:
+    # derive window from data if not given
+    mints, maxts = db.query(sa.func.min(CleanEvent.ts), sa.func.max(CleanEvent.ts)).one()
+    if not mints or not maxts:
         return 0, []
 
-    # Timestamp column and day bucket (DB-agnostic: CAST(ts AS DATE))
-    ts_col = _get_timestamp_col()
-    dcol = sa.cast(ts_col, sa.Date).label("metric_date")
+    if start is None:
+        start = mints.date()
+    if end is None:
+        end = maxts.date()
+    if start > end:
+        start, end = end, start
 
-    # Metric expression:
-    # - If CleanEvent has a "metric" column, group by it (preferred).
-    # - Otherwise, use a literal name passed in (or "default").
-    if hasattr(CleanEvent, "metric"):
-        metric_expr = CleanEvent.metric.label("metric")
-    else:
-        metric_expr = sa.literal(metric_name or "default").label("metric")
+    start_dt = _utc_floor(start)
+    end_dt   = _utc_floor(end + timedelta(days=1))
 
-    # Determine if we have a numeric 'value' column
-    has_value_attr = hasattr(CleanEvent, "value")
-    value_attr = getattr(CleanEvent, "value", None)
-    value_is_numeric = has_value_attr and _is_numeric_column(value_attr)
+    # --- Preferred: SQL aggregation (Postgres); fallback: Python loop (SQLite, etc.) ---
+    dialect = db.bind.dialect.name if db.bind is not None else ""
 
-    cols = [
-        dcol,
-        CleanEvent.source_id.label("source_id"),
-        metric_expr,
-    ]
-    if value_is_numeric:
-        cols += [
-            sa.func.coalesce(sa.func.sum(value_attr), 0).label("value_sum"),
-            sa.func.coalesce(sa.func.avg(value_attr), 0).label("value_avg"),
-        ]
-    else:
-        cols += [
-            sa.literal(0).label("value_sum"),
-            sa.literal(0).label("value_avg"),
-        ]
-    cols.append(sa.func.count().label("value_count"))
+    results: list[tuple] = []
+    if dialect == "postgresql":
+        # group by UTC day to avoid TZ surprises
+        # date_trunc('day', ts AT TIME ZONE 'UTC') :: date
+        day_utc = sa.cast(sa.func.date_trunc('day', sa.text("timezone('UTC', clean_events.ts)")), sa.Date)
 
-    stmt = sa.select(*cols).group_by(dcol, CleanEvent.source_id, metric_expr)
-
-    # Inclusive date filters
-    if start:
-        stmt = stmt.where(ts_col >= datetime.combine(start, time.min))
-    if end:
-        stmt = stmt.where(ts_col < datetime.combine(end + timedelta(days=1), time.min))
-
-    rows = db.execute(stmt).all()
-    if not rows:
-        return 0, []
-
-    # Upsert into metric_daily
-    try:
-        from sqlalchemy.dialects.postgresql import insert as pg_insert  # Postgres path
-
-        ins = pg_insert(MetricDaily).values(
-            [
-                {
-                    "metric_date": r.metric_date,
-                    "source_id": r.source_id,
-                    "metric": r.metric,
-                    "value_sum": r.value_sum,
-                    "value_avg": r.value_avg,
-                    "value_count": r.value_count,
-                }
-                for r in rows
-            ]
-        )
-        upsert = ins.on_conflict_do_update(
-            index_elements=["metric_date", "source_id", "metric"],
-            set_={
-                "value_sum": ins.excluded.value_sum,
-                "value_avg": ins.excluded.value_avg,
-                "value_count": ins.excluded.value_count,
-            },
-        )
-        db.execute(upsert)
-    except Exception:
-        # SQLite / non-PG fallback (or any driver issue): per-row merge
-        for r in rows:
-            db.merge(
-                MetricDaily(
-                    metric_date=r.metric_date,
-                    source_id=r.source_id,
-                    metric=r.metric,
-                    value_sum=r.value_sum,
-                    value_avg=r.value_avg,
-                    value_count=int(r.value_count),
-                )
+        q = (
+            db.query(
+                day_utc.label("metric_date"),
+                CleanEvent.source_id,
+                CleanEvent.metric,
+                sa.func.sum(CleanEvent.value).label("value_sum"),
+                sa.func.avg(CleanEvent.value).label("value_avg"),
+                sa.func.count(CleanEvent.value).label("value_count"),
             )
+            .filter(CleanEvent.ts >= start_dt, CleanEvent.ts < end_dt)
+        )
+        if metric_name:
+            q = q.filter(CleanEvent.metric == metric_name)
+        if source_id:
+            q = q.filter(CleanEvent.source_id == source_id)
+
+        q = q.group_by(day_utc, CleanEvent.source_id, CleanEvent.metric).order_by("metric_date")
+        results = list(q.all())
+
+        # convert rows into a uniform iterable of dicts for upsert
+        aggregates = [
+            {
+                "metric_date": r.metric_date,
+                "source_id":   r.source_id,
+                "metric":      r.metric,
+                "value_sum":   float(r.value_sum or 0),
+                "value_avg":   float(r.value_avg or 0),
+                "value_count": int(r.value_count or 0),
+            }
+            for r in results
+        ]
+    else:
+        # Fallback: Python aggregation (keeps your original logic)
+        q = db.query(CleanEvent.ts, CleanEvent.source_id, CleanEvent.metric, CleanEvent.value)\
+              .filter(CleanEvent.ts >= start_dt, CleanEvent.ts < end_dt)
+        if metric_name:
+            q = q.filter(CleanEvent.metric == metric_name)
+        if source_id:
+            q = q.filter(CleanEvent.source_id == source_id)
+
+        events = q.all()
+        if not events:
+            return 0, []
+
+        agg = defaultdict(lambda: {"sum": 0.0, "count": 0})
+        for ts, sid, metric, value in events:
+            day = ts.astimezone(timezone.utc).date()  # ensure UTC day
+            key = (day, sid, metric)
+            agg[key]["sum"] += float(value or 0)
+            agg[key]["count"] += 1
+
+        aggregates = []
+        for (metric_date, sid, metric), vals in agg.items():
+            total = vals["sum"]
+            cnt   = vals["count"]
+            aggregates.append({
+                "metric_date": metric_date,
+                "source_id": sid,
+                "metric": metric,
+                "value_sum": total,
+                "value_avg": (total / cnt) if cnt else 0.0,
+                "value_count": cnt,
+            })
+    print("DEBUG aggregates:", aggregates)
+
+    # Upsert into MetricDaily
+    if not aggregates:
+        return 0, []
+
+    upserted = 0
+    preview: list[dict] = []
+    for row in aggregates:
+        metric_date = row["metric_date"]
+        sid         = row["source_id"]
+        metric      = row["metric"]
+        total       = float(row["value_sum"])
+        avg         = float(row["value_avg"])
+        cnt         = int(row["value_count"])
+
+        md = (
+            db.query(MetricDaily)
+              .filter(
+                  MetricDaily.metric_date == metric_date,
+                  MetricDaily.source_id   == sid,
+                  MetricDaily.metric      == metric,
+              )
+              .one_or_none()
+        )
+        if md is None:
+            md = MetricDaily(
+                metric_date=metric_date,
+                source_id=sid,
+                metric=metric,
+                value_sum=total,
+                value_avg=avg,
+                value_count=cnt,
+            )
+            db.add(md)
+        else:
+            md.value_sum = total
+            md.value_avg = avg
+            md.value_count = cnt
+
+        upserted += 1
+        preview.append(
+            {
+                "metric_date": str(metric_date),
+                "source_id": sid,
+                "metric": metric,
+                "value_sum": total,
+                "value_avg": avg,
+                "value_count": cnt,
+            }
+        )
 
     db.commit()
-
-    preview = [
-        {
-            "metric_date": str(r.metric_date),
-            "source_id": r.source_id,
-            "metric": r.metric,
-            "value_sum": float(r.value_sum),
-            "value_avg": float(r.value_avg),
-            "value_count": int(r.value_count),
-        }
-        for r in rows[:10]
-    ]
-    return len(rows), preview
+    return upserted, preview
