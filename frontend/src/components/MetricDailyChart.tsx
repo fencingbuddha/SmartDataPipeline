@@ -1,18 +1,23 @@
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip } from "recharts";
+import dayjs from "dayjs";
 
-export default function MetricDailyChart({ rows }: { rows: {metric_date:string; value:number}[] }) {
-  const data = rows.map(r => ({ date: r.metric_date, value: r.value }));
+export type ChartPoint = { date: string; value: number };
+
+export default function MetricDailyChart({ data }: { data: ChartPoint[] }) {
+  const safeData = Array.isArray(data) ? data : [];
+
   return (
-    <div style={{ height: 280, marginTop: 12, border: "1px solid #eee", borderRadius: 8, padding: 8 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="date" />
-          <YAxis />
-          <Tooltip />
-          <Line type="monotone" dataKey="value" dot={false} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={safeData} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="date" tickFormatter={(d) => dayjs(d).format("MM-DD")} minTickGap={24} />
+        <YAxis allowDecimals={false} />
+        <Tooltip
+          labelFormatter={(v) => dayjs(v as string).format("YYYY-MM-DD")}
+          formatter={(val) => [String(val), "Value"] as [string, string]}
+        />
+        <Line type="monotone" dataKey="value" strokeWidth={2} dot={false} />
+      </LineChart>
+    </ResponsiveContainer>
   );
 }
