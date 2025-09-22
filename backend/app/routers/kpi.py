@@ -13,6 +13,7 @@ def run_kpi(
     end: date | None = Query(None, description="If omitted, derive from data"),
     metric: str | None = Query(None, description="If omitted, compute ALL metrics"),
     source_id: int | None = Query(None),
+    distinct_field: str | None = None,
     db: Session = Depends(get_db),
 ):
     upserted, preview = run_daily_kpis(
@@ -21,5 +22,6 @@ def run_kpi(
         end=end,
         metric_name=metric,
         source_id=source_id,
+        distinct_field=distinct_field,
     )
     return {"status": "ok", "rows_upserted": upserted, "preview": preview}

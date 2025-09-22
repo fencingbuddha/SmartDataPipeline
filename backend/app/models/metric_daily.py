@@ -14,6 +14,7 @@ class MetricDaily(Base):
     value_sum   = Column(Numeric(18, 4), nullable=False, default=0)
     value_avg   = Column(Numeric(18, 4), nullable=False, default=0)
     value_count = Column(Integer,          nullable=False, default=0)
+    value_distinct = Column(Integer, nullable=True)
 
     __table_args__ = (
         PrimaryKeyConstraint("metric_date", "source_id", "metric", name="pk_metric_daily"),
