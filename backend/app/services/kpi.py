@@ -14,6 +14,7 @@ def run_daily_kpis(
     end: date | None = None,
     metric_name: str | None = None,
     source_id: int | None = None,
+    distinct_field: str | None = None,  # configurable distincts
 ) -> tuple[int, list[dict]]:
     # derive window from data if not given
     mints, maxts = db.query(sa.func.min(CleanEvent.ts), sa.func.max(CleanEvent.ts)).one()
@@ -30,25 +31,32 @@ def run_daily_kpis(
     start_dt = _utc_floor(start)
     end_dt   = _utc_floor(end + timedelta(days=1))
 
-    # --- Preferred: SQL aggregation (Postgres); fallback: Python loop (SQLite, etc.) ---
+    # Prepare distinct column (if provided and valid)
+    distinct_col = None
+    if distinct_field and hasattr(CleanEvent, distinct_field): 
+        distinct_col = getattr(CleanEvent, distinct_field)
+
     dialect = db.bind.dialect.name if db.bind is not None else ""
 
     results: list[tuple] = []
     if dialect == "postgresql":
         # group by UTC day to avoid TZ surprises
-        # date_trunc('day', ts AT TIME ZONE 'UTC') :: date
         day_utc = sa.cast(sa.func.date_trunc('day', sa.text("timezone('UTC', clean_events.ts)")), sa.Date)
 
+        select_cols = [
+            day_utc.label("metric_date"),
+            CleanEvent.source_id,
+            CleanEvent.metric,
+            sa.func.sum(CleanEvent.value).label("value_sum"),
+            sa.func.avg(CleanEvent.value).label("value_avg"),
+            sa.func.count().label("value_count")        ]
+        
+        if distinct_col is not None:
+            select_cols.append(sa.func.count(sa.distinct(distinct_col)).label("value_distinct"))
+
         q = (
-            db.query(
-                day_utc.label("metric_date"),
-                CleanEvent.source_id,
-                CleanEvent.metric,
-                sa.func.sum(CleanEvent.value).label("value_sum"),
-                sa.func.avg(CleanEvent.value).label("value_avg"),
-                sa.func.count(CleanEvent.value).label("value_count"),
-            )
-            .filter(CleanEvent.ts >= start_dt, CleanEvent.ts < end_dt)
+            db.query(*select_cols)
+              .filter(CleanEvent.ts >= start_dt, CleanEvent.ts < end_dt)
         )
         if metric_name:
             q = q.filter(CleanEvent.metric == metric_name)
@@ -58,9 +66,9 @@ def run_daily_kpis(
         q = q.group_by(day_utc, CleanEvent.source_id, CleanEvent.metric).order_by("metric_date")
         results = list(q.all())
 
-        # convert rows into a uniform iterable of dicts for upsert
-        aggregates = [
-            {
+        aggregates = []
+        for r in results:
+            row = {
                 "metric_date": r.metric_date,
                 "source_id":   r.source_id,
                 "metric":      r.metric,
@@ -68,12 +76,16 @@ def run_daily_kpis(
                 "value_avg":   float(r.value_avg or 0),
                 "value_count": int(r.value_count or 0),
             }
-            for r in results
-        ]
+            if distinct_col is not None:
+                row["value_distinct"] = int(getattr(r, "value_distinct") or 0)
+            aggregates.append(row)
+
     else:
-        # Fallback: Python aggregation (keeps your original logic)
-        q = db.query(CleanEvent.ts, CleanEvent.source_id, CleanEvent.metric, CleanEvent.value)\
-              .filter(CleanEvent.ts >= start_dt, CleanEvent.ts < end_dt)
+        q = db.query(CleanEvent.ts, CleanEvent.source_id, CleanEvent.metric, CleanEvent.value)
+        if distinct_col is not None:
+            q = q.add_columns(distinct_col.label("distinct_key"))
+
+        q = q.filter(CleanEvent.ts >= start_dt, CleanEvent.ts < end_dt)
         if metric_name:
             q = q.filter(CleanEvent.metric == metric_name)
         if source_id:
@@ -83,26 +95,37 @@ def run_daily_kpis(
         if not events:
             return 0, []
 
-        agg = defaultdict(lambda: {"sum": 0.0, "count": 0})
-        for ts, sid, metric, value in events:
-            day = ts.astimezone(timezone.utc).date()  # ensure UTC day
+        # agg[(day,sid,metric)] = running sums
+        agg = defaultdict(lambda: {"sum": 0.0, "count": 0, "distincts": set()})
+        # Support tuples of columns in future by normalizing to tuple
+        for rec in events:
+            if distinct_col is not None:
+                ts, sid, metric, value, dkey = rec
+            else:
+                ts, sid, metric, value = rec
+                dkey = None
+            day = ts.astimezone(timezone.utc).date()
             key = (day, sid, metric)
-            agg[key]["sum"] += float(value or 0)
-            agg[key]["count"] += 1
+            bucket = agg[key]
+            bucket["sum"] += float(value or 0)
+            bucket["count"] += 1
+            if distinct_col is not None and dkey is not None:
+                bucket["distincts"].add(dkey)
 
         aggregates = []
         for (metric_date, sid, metric), vals in agg.items():
-            total = vals["sum"]
-            cnt   = vals["count"]
-            aggregates.append({
+            total = vals["sum"]; cnt = vals["count"]
+            row = {
                 "metric_date": metric_date,
                 "source_id": sid,
                 "metric": metric,
                 "value_sum": total,
                 "value_avg": (total / cnt) if cnt else 0.0,
                 "value_count": cnt,
-            })
-    print("DEBUG aggregates:", aggregates)
+            }
+            if distinct_col is not None:
+                row["value_distinct"] = len(vals["distincts"])
+            aggregates.append(row)
 
     # Upsert into MetricDaily
     if not aggregates:
@@ -110,6 +133,46 @@ def run_daily_kpis(
 
     upserted = 0
     preview: list[dict] = []
+
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+        rows = []
+        for row in aggregates:
+            payload = {
+                "metric_date": row["metric_date"],
+                "source_id":   row["source_id"],
+                "metric":      row["metric"],
+                "value_sum":   float(row["value_sum"]),
+                "value_avg":   float(row["value_avg"]),
+                "value_count": int(row["value_count"]),
+            }
+            if "value_distinct" in row:
+                payload["value_distinct"] = int(row["value_distinct"])
+            rows.append(payload)
+
+        stmt = insert(MetricDaily).values(rows)
+        update_map = {
+            "value_sum":   stmt.excluded.value_sum,
+            "value_avg":   stmt.excluded.value_avg,
+            "value_count": stmt.excluded.value_count,
+        }
+        if "value_distinct" in rows[0]:
+            update_map["value_distinct"] = stmt.excluded.value_distinct
+
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["metric_date", "source_id", "metric"],
+            set_=update_map,
+        )
+        db.execute(stmt)
+        db.commit()
+        upserted = len(rows)
+        preview = [
+            {
+                **{k: (str(v) if k == "metric_date" else v) for k, v in r.items()}
+            } for r in rows
+        ]
+        return upserted, preview
+
     for row in aggregates:
         metric_date = row["metric_date"]
         sid         = row["source_id"]
@@ -117,6 +180,7 @@ def run_daily_kpis(
         total       = float(row["value_sum"])
         avg         = float(row["value_avg"])
         cnt         = int(row["value_count"])
+        dct         = int(row.get("value_distinct") or 0)
 
         md = (
             db.query(MetricDaily)
@@ -135,12 +199,15 @@ def run_daily_kpis(
                 value_sum=total,
                 value_avg=avg,
                 value_count=cnt,
+                value_distinct=dct if "value_distinct" in row else None,
             )
             db.add(md)
         else:
-            md.value_sum = total
-            md.value_avg = avg
+            md.value_sum   = total
+            md.value_avg   = avg
             md.value_count = cnt
+            if "value_distinct" in row:
+                md.value_distinct = dct
 
         upserted += 1
         preview.append(
@@ -151,6 +218,7 @@ def run_daily_kpis(
                 "value_sum": total,
                 "value_avg": avg,
                 "value_count": cnt,
+                **({"value_distinct": dct} if "value_distinct" in row else {}),
             }
         )
 
