@@ -1,90 +1,423 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import MetricDailyChart from "./MetricDailyChart";
 
+/**
+ * Filter-enabled KPI card with anomaly overlay:
+ * - Loads sources from /api/sources
+ * - Loads metric names from /api/metrics/names (per source)
+ * - Lets you pick: source, metric, start, end, distinct_field
+ * - Calls /api/metrics/daily with source_name + start_date + end_date (+ distinct_field)
+ * - Optional anomaly overlay from /api/metrics/anomaly/rolling
+ * - Renders KPI tiles + table + line chart
+ * - Supports API shapes:
+ *     value_sum/value_avg/value_count/value_distinct and/or single 'value'
+ */
 
-type MetricDaily = { metric_date: string; source_id: number; metric: string; value: number };
+type Row = {
+  metric_date?: string; date?: string; day?: string;
+  source_id?: number | string;
+  metric?: string;
+  value_sum?: number; sum?: number; total?: number; value?: number;
+  value_avg?: number; avg?: number; mean?: number; average?: number;
+  value_count?: number; count?: number; rows?: number; n?: number;
+  value_distinct?: number; distinct?: number; unique?: number;
+};
+
 type Source = { id: number; name: string };
 
-export default function MetricDailyCard() {
-  const [sources, setSources] = useState<Source[]>([]);
-  const [sourceId, setSourceId] = useState<number | null>(null);
-  const [rows, setRows] = useState<MetricDaily[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+const API_BASE =
+  import.meta.env.VITE_API_BASE ?? "http://localhost:8000"; // e.g. http://localhost:8000 (no trailing /api)
 
-  // load sources
+const METRIC_SUGGESTIONS = ["events_total", "errors_total", "revenue", "signups", "sessions"];
+
+export default function MetricDailyCard() {
+  /** Controls */
+  const [sourceName, setSourceName] = useState("demo-source");
+  const [metric, setMetric] = useState("events_total");
+  const [start, setStart] = useState(() => isoDaysAgo(6));
+  const [end, setEnd] = useState(() => isoDaysAgo(0));
+  const [distinctField, setDistinctField] = useState("");
+
+  /** Data / UX */
+  const [sources, setSources] = useState<Source[]>([]);
+  const [metricOptions, setMetricOptions] = useState<string[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [autoLoaded, setAutoLoaded] = useState(false);
+
+  /** Anomalies */
+  const [showAnoms, setShowAnoms] = useState(false);
+  const [anoms, setAnoms] = useState<{date: string; value: number; z?: number}[]>([]);
+
+  /** Load sources once */
   useEffect(() => {
-    fetch("/api/sources")
-      .then(r => (r.ok ? r.json() : Promise.reject(r.statusText)))
+    fetch(`${API_BASE}/api/sources`)
+      .then(async r => (r.ok ? r.json() : Promise.reject(await safeJson(r) ?? { detail: r.statusText })))
       .then((data: Source[]) => {
         setSources(data);
-        if (data.length && sourceId === null) setSourceId(data[0].id); // default to first
+        if (data.length && !data.find(s => s.name === sourceName)) {
+          setSourceName(data[0].name);
+        }
       })
-      .catch(e => setErr(String(e)));
+      .catch(e => setError(String(e?.detail || e?.title || e)));
   }, []);
 
-  // load metrics when sourceId is ready
+  /** Load metric names whenever source changes */
   useEffect(() => {
-    if (sourceId === null) return;
-    setLoading(true);
-    setErr(null);
-    const params = new URLSearchParams({
-      metric: "events_total",
-      source_id: String(sourceId),
-      start_date: "2025-09-15",
-      end_date: "2025-09-30",
-      limit: "1000",
-    });
-    fetch("/api/metrics/daily?" + params.toString())
-      .then(r => (r.ok ? r.json() : Promise.reject(r.statusText)))
-      .then(setRows)
-      .catch(e => setErr(String(e)))
-      .finally(() => setLoading(false));
-  }, [sourceId]);
+    if (!sourceName) return;
+    (async () => {
+      try {
+        const qs = new URLSearchParams({ source_name: sourceName });
+        const resp = await fetch(`${API_BASE}/api/metrics/names?${qs.toString()}`);
+        if (!resp.ok) { setMetricOptions([]); return; }
+        const names: string[] = await resp.json();
+        setMetricOptions(names);
+        if (names.length && !names.includes(metric)) setMetric(names[0]);
+      } catch {
+        setMetricOptions([]);
+      }
+    })();
+  }, [sourceName]);
 
+  /** Auto-load once when we have a valid sourceName */
+  useEffect(() => {
+    if (autoLoaded) return;
+    if (!sources.length) return;
+    if (!sources.find(s => s.name === sourceName)) return;
+    setAutoLoaded(true);
+    load(); // initial load
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sources, sourceName, autoLoaded]);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      if (start && end && start > end) {
+        throw new Error("Start date must be on or before End date.");
+      }
+      if (!sourceName) throw new Error("Please select a source.");
+      if (!metric) throw new Error("Please select a metric.");
+
+      const qs = new URLSearchParams();
+      qs.set("source_name", sourceName);
+      qs.set("metric", metric);
+      if (start) qs.set("start_date", start);
+      if (end) qs.set("end_date", end);
+      if (distinctField.trim()) qs.set("distinct_field", distinctField.trim());
+
+      const resp = await fetch(`${API_BASE}/api/metrics/daily?${qs.toString()}`);
+      if (!resp.ok) {
+        const body = await safeJson(resp);
+        throw new Error(body?.detail || body?.title || `HTTP ${resp.status}`);
+      }
+      const json = await resp.json();
+      const arr: Row[] = Array.isArray(json) ? json : (json.items ?? json.data ?? []);
+      arr.sort((a, b) => (getDate(a) || "").localeCompare(getDate(b) || ""));
+      setRows(arr);
+
+      // fetch anomalies if toggle is on
+      if (showAnoms && arr.length) {
+        await fetchAnomalies(sourceName, metric, start, end, setAnoms, setError);
+      } else {
+        setAnoms([]);
+      }
+    } catch (e: any) {
+      setRows([]);
+      setError(e?.message || "Failed to load data");
+      setAnoms([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Re-fetch anomalies when toggled on (without requiring Apply) */
+  useEffect(() => {
+    (async () => {
+      if (!showAnoms) return setAnoms([]);
+      if (!rows.length) return;
+      await fetchAnomalies(sourceName, metric, start, end, setAnoms, setError);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAnoms]);
+
+  async function handleExportCSV() {
+    if (!sourceName || !metric) return;
+    setExporting(true);
+    try {
+      const qs = new URLSearchParams();
+      qs.set("source_name", sourceName);
+      qs.set("metric", metric);
+      if (start) qs.set("start_date", start);
+      if (end) qs.set("end_date", end);
+
+      const resp = await fetch(`${API_BASE}/api/metrics/export/csv?${qs.toString()}`);
+      if (!resp.ok) {
+        const body = await safeJson(resp);
+        throw new Error(body?.detail || body?.title || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `metric_daily_${metric}_${sourceName}_${start}_${end}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e?.message || "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  /** KPI aggregates for tiles */
+  const kpis = useMemo(() => {
+    let sum = 0, avg = 0, cnt = 0, dst = 0, n = 0;
+    for (const r of rows) {
+      const vSum = num(pick(r, "value_sum", "sum", "total", "value"));
+      const vAvg = num(pick(r, "value_avg", "avg", "mean", "average"));
+      const vCnt = num(pick(r, "value_count", "count", "rows", "n"));
+      const vDst = num(pick(r, "value_distinct", "distinct", "unique"));
+      sum += vSum; avg += vAvg; cnt += vCnt; dst += vDst; n++;
+    }
+    return {
+      sum,
+      avg: n ? +(avg / n).toFixed(2) : 0,
+      count: cnt,
+      distinct: dst || 0,
+      hasDistinct: rows.some(r => pick(r, "value_distinct", "distinct", "unique") != null),
+    };
+  }, [rows]);
+
+  /** UI */
   return (
-    <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 8 }}>
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8 }}>
-        <h3 style={{ margin: 0, flex: 1 }}>Daily KPIs (events_total)</h3>
-        <label>
-          Source:&nbsp;
-          <select
-            value={sourceId ?? ""}
-            onChange={(e) => setSourceId(Number(e.target.value))}
-            disabled={!sources.length}
-          >
-            {sources.map(s => (
-              <option key={s.id} value={s.id}>{s.name} (#{s.id})</option>
-            ))}
+    <div style={{ padding: 16, border: "1px solid #333", borderRadius: 12 }}>
+      <h2 style={{ marginTop: 0 }}>Daily KPIs ({metric})</h2>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
+        <Labeled label="Source">
+          <select value={sourceName} onChange={e => setSourceName(e.target.value)}>
+            {sources.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
           </select>
+        </Labeled>
+
+        <Labeled label="Metric">
+          {metricOptions.length ? (
+            <select value={metric} onChange={e => setMetric(e.target.value)}>
+              {metricOptions.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          ) : (
+            <>
+              <input list="metric-suggestions" value={metric} onChange={e => setMetric(e.target.value)} />
+              <datalist id="metric-suggestions">
+                {METRIC_SUGGESTIONS.map(m => <option key={m} value={m} />)}
+              </datalist>
+            </>
+          )}
+        </Labeled>
+
+        <Labeled label="Start">
+          <input type="date" value={start} onChange={e => setStart(e.target.value)} />
+        </Labeled>
+
+        <Labeled label="End">
+          <input type="date" value={end} onChange={e => setEnd(e.target.value)} />
+        </Labeled>
+
+        <Labeled label="Distinct Field (optional)" style={{ minWidth: 180 }}>
+          <input placeholder="id / user_id …" value={distinctField} onChange={e => setDistinctField(e.target.value)} />
+        </Labeled>
+
+        <button onClick={load} disabled={loading} style={{ padding: "8px 12px" }}>
+          {loading ? "Loading…" : "Apply"}
+        </button>
+
+        <button
+          onClick={() => {
+            setMetric(metricOptions[0] ?? "events_total");
+            setStart(isoDaysAgo(6));
+            setEnd(isoDaysAgo(0));
+            setDistinctField("");
+            setError(null);
+            setAnoms([]);
+          }}
+          disabled={loading}
+          style={{ padding: "8px 12px", opacity: 0.9 }}
+        >
+          Reset
+        </button>
+
+        <button onClick={handleExportCSV} disabled={loading || exporting || !metric || !sourceName} style={{ padding: "8px 12px" }}>
+          {exporting ? "Exporting…" : "Export CSV"}
+        </button>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={showAnoms}
+            onChange={(e) => {
+              setShowAnoms(e.target.checked);
+              if (e.target.checked && rows.length) {
+                // fetch immediately when toggled on
+                fetchAnomalies(sourceName, metric, start, end, setAnoms, setError);
+              } else {
+                setAnoms([]);
+              }
+            }}
+            disabled={loading}
+          />
+          Show anomalies
         </label>
       </div>
 
-      {loading ? (
-        <div>Loading…</div>
-      ) : err ? (
-        <div>Error: {err}</div>
-      ) : rows.length === 0 ? (
-        <div>No data</div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left" }}>Date</th>
-              <th style={{ textAlign: "right" }}>Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => (
-              <tr key={`${r.metric_date}-${r.source_id}-${r.metric}`}>
-                <td>{r.metric_date}</td>
-                <td style={{ textAlign: "right" }}>{r.value}</td>
+      {/* Error banner */}
+      {error && <div style={{ color: "#f87171", marginBottom: 8 }}>⚠️ {error}</div>}
+
+      {/* KPI tiles */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        <Tile title="Sum" value={fmtNum(kpis.sum)} />
+        <Tile title="Average" value={fmtNum(kpis.avg)} />
+        <Tile title="Count" value={fmtNum(kpis.count)} />
+        <Tile title="Distinct" value={kpis.hasDistinct ? fmtNum(kpis.distinct) : "—"} />
+      </div>
+
+      {/* Table */}
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead>
+          <tr>
+            {["Date","Source","Metric","Sum","Avg","Count","Distinct"].map(h =>
+              <th key={h} style={thTd(true)}>{h}</th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const date = getDate(r);
+            const src  = pick(r, "source_id", "source");
+            const met  = pick(r, "metric", "name");
+            const vSum = pick(r, "value_sum", "sum", "total", "value");
+            const vAvg = pick(r, "value_avg", "avg", "mean", "average");
+            const vCnt = pick(r, "value_count", "count", "rows", "n");
+            const vDst = pick(r, "value_distinct", "distinct", "unique");
+            return (
+              <tr key={`${date}-${i}`}>
+                <td style={thTd()}>{fmt(date)}</td>
+                <td style={thTd()}>{fmt(src)}</td>
+                <td style={thTd()}>{fmt(met)}</td>
+                <td style={thTd()}>{fmt(vSum)}</td>
+                <td style={thTd()}>{fmt(vAvg)}</td>
+                <td style={thTd()}>{fmt(vCnt)}</td>
+                <td style={thTd()}>{fmt(vDst)}</td>
               </tr>
-            ))}
-            {rows.length > 0 && <MetricDailyChart rows={rows} />}
-          </tbody>
-        </table>
+            );
+          })}
+          {rows.length === 0 && !loading && (
+            <tr><td style={thTd()} colSpan={7}>No data for this selection. Try a wider date range or different filters.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      {/* Chart */}
+      {rows.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <MetricDailyChart
+            key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}`}
+            rows={rows.map(r => ({
+              date: getDate(r) || "",
+              value: num(pick(r, "value_sum", "sum", "total", "value"))
+            }))}
+            anomalies={anoms}
+          />
+        </div>
       )}
     </div>
   );
+}
+
+/* ---------- helpers ---------- */
+function pick<T extends object, K extends keyof any>(o: T, ...ks: K[]) {
+  for (const k of ks) {
+    const v = (o as any)[k];
+    if (v !== undefined && v !== null) return v;
+  }
+  return undefined;
+}
+function getDate(r: Row) { return (pick(r, "metric_date", "date", "day") as string | undefined) ?? undefined; }
+function fmt(v: any) { return v === undefined || v === null || v === "" ? "—" : String(v); }
+function num(v: any) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function fmtNum(v: number) { return Number.isFinite(v) ? v.toString() : "—"; }
+function isoDaysAgo(n: number) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0,10); }
+async function safeJson(r: Response) { try { return await r.json(); } catch { return null; } }
+
+function thTd(header = false): React.CSSProperties {
+  return {
+    border: "1px solid #2a2a2a",
+    padding: "8px 10px",
+    textAlign: "left",
+    background: header ? "#111" : "transparent",
+  };
+}
+
+function Tile({ title, value }: { title: string; value: string | number }) {
+  return (
+    <div style={{ border: "1px solid #2a2a2a", borderRadius: 12, padding: "12px 14px", minWidth: 160 }}>
+      <div style={{ fontSize: 12, color: "#9ca3af" }}>{title}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, marginTop: 4 }}>{value}</div>
+    </div>
+  );
+}
+
+function Labeled(props: React.PropsWithChildren<{label: string; style?: React.CSSProperties}>) {
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:4, ...props.style }}>
+      <label style={{ fontSize: 12, color:"#9ca3af" }}>{props.label}</label>
+      {props.children}
+    </div>
+  );
+}
+
+async function fetchAnomalies(
+  sourceName: string,
+  metric: string,
+  start: string | undefined,
+  end: string | undefined,
+  setAnoms: (v: {date: string; value: number; z?: number}[]) => void,
+  setError: (v: string | null) => void,
+) {
+  try {
+    const qs2 = new URLSearchParams();
+    qs2.set("source_name", sourceName);
+    qs2.set("metric", metric);
+    if (start) qs2.set("start_date", start);
+    if (end) qs2.set("end_date", end);
+    qs2.set("window", "3");
+    qs2.set("z_thresh", "2");
+
+    const resp2 = await fetch(`${API_BASE}/api/metrics/anomaly/rolling?${qs2.toString()}`);
+    if (resp2.ok) {
+      const js = await resp2.json();
+      const only = Array.isArray(js) ? js : [];
+      setAnoms(
+        only
+          .filter((r: any) => r?.is_anomaly)
+          .map((r: any) => ({
+            date: String(r.metric_date),
+            value: Number(r.value ?? r.value_sum ?? 0),
+            z: typeof r.z === "number" ? r.z : undefined,
+          }))
+      );
+    } else {
+      setAnoms([]);
+      const body = await safeJson(resp2);
+      setError(String(body?.detail || body?.title || `HTTP ${resp2.status}`));
+    }
+  } catch (e: any) {
+    setAnoms([]);
+    setError(e?.message || "Failed to load anomalies");
+  }
 }
