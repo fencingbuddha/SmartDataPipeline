@@ -8,14 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.metrics import fetch_metric_daily
-from app.models import source as models_source 
+from app.models import source as models_source
 
 from sqlalchemy import text
 from fastapi.responses import StreamingResponse
 import io, csv
 
-from statistics import mean, stdev
-from math import isfinite
+from app.services.metrics import rolling_anomalies
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -85,7 +84,7 @@ def get_metric_daily(
             models_source.Source.name == source_name
         ).scalar()
         if sid is None:
-            raise HTTPException(status_code=404, detail=f"Unknown source: {source_name}")
+            return []
         source_id = sid
 
     rows = fetch_metric_daily(
@@ -187,7 +186,6 @@ def export_metrics_csv(
         headers=headers,
     )
 
-
 @router.get("/anomaly/rolling")
 def rolling_anomaly(
     source_name: str | None = Query(None),
@@ -195,11 +193,11 @@ def rolling_anomaly(
     metric: str = Query(...),
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
-    window: int = Query(7, ge=2, le=60),         # lookback window (days)
-    z_thresh: float = Query(3.0, ge=0.5, le=10), # anomaly threshold |z|>= z_thresh
+    window: int = Query(7, ge=2, le=60),
+    z_thresh: float = Query(3.0, ge=0.5, le=10),
     db: Session = Depends(get_db),
 ):
-    # 1) Resolve source_name -> id (reuse your pattern)
+    # Resolve source_name -> id
     if source_id is None and source_name:
         sid = db.query(models_source.Source.id)\
                 .filter(models_source.Source.name == source_name)\
@@ -208,7 +206,7 @@ def rolling_anomaly(
             raise HTTPException(status_code=404, detail=f"Unknown source: {source_name}")
         source_id = sid
 
-    # 2) Fetch daily rows ordered by date
+    # Pull daily rows
     rows = fetch_metric_daily(
         db,
         source_id=source_id,
@@ -218,29 +216,66 @@ def rolling_anomaly(
         limit=10_000,
     )
 
-    # 3) Build (date, value) series (prefer value_sum; fallback to value)
-    series: list[tuple[date, int, str, float]] = []
-    for r in rows:
-        v = getattr(r, "value_sum", None)
-        if v is None:
-            v = getattr(r, "value", None)
-        if v is None:
-            continue
-        series.append((r.metric_date, r.source_id, r.metric, float(v)))
+    # Rolling z-score using previous `window` points only
+    from statistics import mean, pstdev
 
-    # 4) Rolling z-score using *previous* window (no leakage)
-    out = []
-    for i, (d, sid, m, v) in enumerate(series):
-        prev_vals = [vv for (_, _, _, vv) in series[max(0, i - window): i]]
-        # need enough history to compute std
-        if len(prev_vals) < max(3, min(window - 1, window)):
-            out.append({"metric_date": d, "source_id": sid, "metric": m, "value": v, "z": None, "is_anomaly": False})
-            continue
-        mu = mean(prev_vals)
-        sd = stdev(prev_vals)
-        z = 0.0 if sd == 0 else (v - mu) / sd
-        is_anom = abs(z) >= z_thresh and isfinite(z)
-        out.append({"metric_date": d, "source_id": sid, "metric": m, "value": v, "z": z, "is_anomaly": is_anom})
+    history: list[float] = []
+    out: list[dict] = []
+
+    def val_of(r) -> float | None:
+        # prefer .value, then .value_sum, then .value_avg, then .value_count
+        for k in ("value", "value_sum", "value_avg", "value_count"):
+            v = getattr(r, k, None)
+            if v is not None:
+                return float(v)
+        return None
+
+    for r in rows:
+        v = val_of(r)
+        mu = None
+        sd = None
+        is_outlier = False
+
+        if len(history) >= window:
+            last = history[-window:]
+            mu = mean(last)
+            sd = pstdev(last)  # population stdev; 0.0 if last are identical
+
+            if v is not None:
+                if sd == 0:
+                    # Fallback: with a flat window, any non-equal value is anomalous
+                    is_outlier = (v != mu)
+                else:
+                    is_outlier = abs(v - mu) >= z_thresh * sd
+
+        out.append({
+            "date": r.metric_date,
+            "value": v,
+            "rolling_mean": mu,
+            "rolling_std": sd,
+            "is_outlier": is_outlier,
+        })
+
+        if v is not None:
+            history.append(v)
 
     return out
 
+@router.get("/metrics/anomaly/rolling")
+def rolling_anomaly_endpoint(
+    source_name: str = Query(...),
+    metric: str = Query(...),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    window: int = Query(3, ge=2, le=30),
+    db: Session = Depends(get_db),
+):
+    return rolling_anomalies(
+        db,
+        source_name=source_name,
+        metric=metric,
+        start=start_date,
+        end=end_date,
+        window=window,
+        z_threshold=3.0,
+    )
