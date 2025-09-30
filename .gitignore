@@ -9,3 +9,7 @@ frontend/dist/
 *.csv
 backend/.env
 frontend/.env
+
+# macOS cruft
+.DS_Store
+**/.DS_Store
