@@ -14,9 +14,12 @@ def run_daily_kpis(
     end: date | None = None,
     metric_name: str | None = None,
     source_id: int | None = None,
-    distinct_field: str | None = None,  # configurable distincts
+    agg: str | None = None,                 # <— added (currently not used)
+    distinct_field: str | None = None,      # configurable distincts
 ) -> tuple[int, list[dict]]:
-    # derive window from data if not given
+    # NOTE: 'agg' accepted for API compatibility; current implementation
+    # computes value_sum/value_avg/value_count in one pass.
+
     mints, maxts = db.query(sa.func.min(CleanEvent.ts), sa.func.max(CleanEvent.ts)).one()
     if not mints or not maxts:
         return 0, []
