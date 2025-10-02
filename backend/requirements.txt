@@ -5,6 +5,8 @@ uvicorn[standard]>=0.30,<1.0
 # --- Data / ETL ---
 pandas>=2.2,<3.0
 numpy>=1.26,<3.0
+scipy>=1.11,<2.0
+scikit-learn>=1.4,<1.6
 
 # --- Database ---
 SQLAlchemy>=2.0,<3.0
