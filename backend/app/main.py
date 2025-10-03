@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import health, upload, kpi, ingest, metrics, sources, anomaly_iforest
+from app.routers import health, upload, kpi, ingest, metrics, sources, anomaly_iforest, forecast
 
 app = FastAPI(title="Smart Data Pipeline API")
 
@@ -19,3 +19,4 @@ app.include_router(ingest.router)
 app.include_router(metrics.router)
 app.include_router(sources.router)
 app.include_router(anomaly_iforest.router)
+app.include_router(forecast.router)

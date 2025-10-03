@@ -20,7 +20,7 @@ if not db_url:
 
 if not db_url:
     # last-resort dev default (keep this consistent with your local dev!)
-    db_url = "postgresql+psycopg2://postgres:postgres@localhost:5432/smartdata"
+    db_url = "postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata"
 
 # Build engine with proper settings
 if db_url.startswith("sqlite"):
