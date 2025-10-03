@@ -1,16 +1,13 @@
-# tests/conftest.py
+# backend/tests/conftest.py
 import os
 import sys
 import importlib
-from datetime import date
+from datetime import date, timedelta
 import pytest
 
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-# --------------------------------------------------------------------------------------
-# Point the app + tests at Postgres
-# --------------------------------------------------------------------------------------
 TEST_DB_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test",
@@ -24,6 +21,7 @@ for mod in (
     "app.models.metric_daily",
     "app.models.raw_upload",
     "app.models.raw_event",
+    "app.models.forecast_results",
 ):
     try:
         importlib.import_module(mod)
@@ -68,7 +66,7 @@ try:
 except Exception:
     pass
 
-# Ensure /api/metrics/daily exists; if not, add a no-op fallback (the validation test only checks 200)
+# Ensure /api/metrics/daily exists; if not, add a no-op fallback (some tests just need 200)
 try:
     from fastapi.routing import APIRoute
     import app.routers.metrics as metrics_router  # type: ignore
@@ -76,7 +74,6 @@ try:
     have_daily = any(isinstance(r, APIRoute) and r.path == "/api/metrics/daily" for r in app.routes)
     if not have_daily:
         app.include_router(metrics_router.router, prefix="/api")
-        # re-check
         have_daily = any(isinstance(r, APIRoute) and r.path == "/api/metrics/daily" for r in app.routes)
     if not have_daily:
         from fastapi import APIRouter, Query
@@ -107,7 +104,7 @@ def _create_schema_once():
         # Ensure test-only column exists
         conn.execute(text("ALTER TABLE metric_daily ADD COLUMN IF NOT EXISTS value DOUBLE PRECISION"))
 
-        # Tests sometimes insert only 'value'. Allow aggregates to be NULL.
+        # Allow aggregates to be NULL in tests
         for col in ("value_sum", "value_avg", "value_count"):
             conn.execute(text(f"ALTER TABLE metric_daily ALTER COLUMN {col} DROP NOT NULL"))
 
@@ -149,3 +146,34 @@ def reset_db():
 def client():
     from fastapi.testclient import TestClient
     return TestClient(app)
+
+
+# -------------------- NEW: seed data for forecasting tests --------------------
+from app.models.source import Source
+from app.models.metric_daily import MetricDaily
+
+@pytest.fixture()
+def seeded_metric_daily(db):
+    """
+    Seed 30 days of 'value' metrics for source 'demo-source' so forecasting can train.
+    """
+    src = db.query(Source).filter_by(name="demo-source").one_or_none()
+    if not src:
+        src = Source(name="demo-source")
+        db.add(src)
+        db.commit()
+        db.refresh(src)
+
+    start = date(2025, 9, 1)
+    for i in range(30):
+        d = start + timedelta(days=i)
+        db.merge(MetricDaily(
+            source_id=src.id,
+            metric="value",
+            metric_date=d,
+            value_sum=10.0 + (i % 7),  # simple non-zero pattern
+            value_avg=None,
+            value_count=1,
+        ))
+    db.commit()
+    return src.id
