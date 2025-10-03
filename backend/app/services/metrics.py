@@ -38,6 +38,21 @@ def _row_value(value: Any, value_sum: Any, value_avg: Any, value_count: Any) -> 
     return None
 
 
+def _has_column(db: Session, table_name: str, column_name: str, schema: str = "public") -> bool:
+    """Return True if (schema.table_name).column_name exists."""
+    q = text(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = :schema
+          AND table_name   = :table
+          AND column_name  = :column
+        LIMIT 1
+        """
+    )
+    return db.execute(q, {"schema": schema, "table": table_name, "column": column_name}).first() is not None
+
+
 def fetch_metric_daily(
     db: Session,
     *,
@@ -47,8 +62,8 @@ def fetch_metric_daily(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     limit: int = 1000,
-    distinct_field: Optional[str] = None,  # placeholder for future
-    agg: Optional[str] = None,             # placeholder for future
+    distinct_field: Optional[str] = None,
+    agg: Optional[str] = None,
 ) -> List[MetricDailyRow]:
     """
     Fetch rows from metric_daily with optional filters (inclusive dates).
@@ -76,17 +91,25 @@ def fetch_metric_daily(
         where.append("md.metric_date <= :end_date")
         params["end_date"] = end_date
 
-    sql = f"""
-        SELECT
+    # Build SELECT list. If md.value column doesn't exist, select a typed NULL so the key is always present.
+    select_cols = """
             md.metric_date::date        AS d,
             md.source_id                AS source_id,
             md.metric                   AS metric,
             md.value_sum                AS value_sum,
             md.value_avg                AS value_avg,
             md.value_count              AS value_count,
-            md.value_distinct           AS value_distinct,
-            -- Some schemas have md.value, some don't; selecting it is harmless if present
-            md.value                    AS value
+            md.value_distinct           AS value_distinct
+    """.strip()
+
+    if _has_column(db, "metric_daily", "value"):
+        select_cols += ", md.value AS value"
+    else:
+        select_cols += ", NULL::double precision AS value"
+
+    sql = f"""
+        SELECT
+            {select_cols}
         FROM metric_daily md
         {' '.join(joins)}
         WHERE {' AND '.join(where)}
@@ -151,7 +174,7 @@ def fetch_metric_daily_as_dicts(
                 "source_id": r.source_id,
                 "metric": r.metric,
                 "value": r.value,
-                # keep extras too (harmless if present)
+                # keep extras
                 "value_sum": r.value_sum,
                 "value_avg": r.value_avg,
                 "value_count": r.value_count,
@@ -204,7 +227,7 @@ def rolling_anomalies(
     Reference implementation available for use if you switch the router to call this.
     (Your current router-side implementation is fine once rows have attribute access.)
     """
-    # Use the dict version for simpler math
+    # Use the dict version
     series = fetch_metric_daily_as_dicts(
         db,
         source_id=source_id,
@@ -243,4 +266,3 @@ def rolling_anomalies(
         if v is not None:
             vals.append(v)
     return out
-
