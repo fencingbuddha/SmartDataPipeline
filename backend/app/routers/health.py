@@ -1,7 +1,11 @@
 from fastapi import APIRouter
+from app.schemas.common import ok, meta_now
 
-router = APIRouter(prefix="/api", tags=["health"])
+router = APIRouter(prefix="/api/health", tags=["health"])
 
-@router.get("/health")
-def health():
-    return {"status": "ok"}
+@router.get("")
+def healthcheck():
+    return ok(
+        data={"status": "ok"}, 
+        meta=meta_now()
+    )

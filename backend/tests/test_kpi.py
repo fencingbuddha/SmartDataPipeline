@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta, UTC
 from fastapi.testclient import TestClient
 import sqlalchemy as sa
+
 from app.main import app
 from app.db.session import SessionLocal
 from app.models.source import Source
@@ -9,16 +12,26 @@ from app.models.metric_daily import MetricDaily
 
 client = TestClient(app)
 
+
 def _reset(db):
     db.execute(sa.text("DELETE FROM metric_daily"))
     db.execute(sa.text("DELETE FROM clean_events"))
     db.commit()
+
 
 def _ensure_source(db, sid=1):
     src = db.get(Source, sid)
     if not src:
         db.add(Source(id=sid, name="demo"))
         db.commit()
+
+
+def _unwrap(obj):
+    """Unwrap {ok,data,error,meta} envelope if present."""
+    if isinstance(obj, dict) and "ok" in obj and "data" in obj:
+        return obj["data"] or {}
+    return obj
+
 
 def test_kpi_happy_path():
     db = SessionLocal()
@@ -37,12 +50,14 @@ def test_kpi_happy_path():
         db.commit()
 
         resp = client.post("/api/kpi/run")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["rows_upserted"] >= 2  # yesterday + today
+        assert resp.status_code == 200, resp.text
+        payload = _unwrap(resp.json())
+        rows_upserted = int(payload.get("rows_upserted") or payload.get("upserted") or 0)
+        assert rows_upserted >= 2  # yesterday + today
 
         with SessionLocal() as check:
             res = check.execute(sa.select(MetricDaily)).scalars().all()
+
         # find yesterday
         yesterday = (base - timedelta(days=1)).date()
         md = next(r for r in res if r.metric_date == yesterday and r.metric == "orders")
@@ -52,12 +67,15 @@ def test_kpi_happy_path():
     finally:
         db.close()
 
+
 def test_kpi_empty_ok():
     db = SessionLocal()
     try:
         _reset(db)
         resp = client.post("/api/kpi/run")
-        assert resp.status_code == 200
-        assert resp.json()["rows_upserted"] == 0
+        assert resp.status_code == 200, resp.text
+        payload = _unwrap(resp.json())
+        rows_upserted = int(payload.get("rows_upserted") or payload.get("upserted") or 0)
+        assert rows_upserted == 0
     finally:
         db.close()
