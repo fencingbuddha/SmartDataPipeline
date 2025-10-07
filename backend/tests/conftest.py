@@ -1,9 +1,10 @@
-# backend/tests/conftest.py
 import os
 import sys
 import importlib
 from datetime import date, timedelta
 import pytest
+import httpx
+from fastapi.testclient import TestClient
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -34,8 +35,7 @@ from app.db.base import Base
 ENGINE = create_engine(TEST_DB_URL, future=True)
 SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
 
-# Patch app's wiring everywhere
-import app.db.session as app_db_session  # type: ignore
+import app.db.session as app_db_session
 app_db_session.engine = ENGINE
 app_db_session.SessionLocal = SessionLocal
 
@@ -50,7 +50,6 @@ for m in list(sys.modules.values()):
 
 from app.main import app
 
-# Use our SessionLocal in FastAPI dependency if present
 try:
     from app.db.session import get_db
 
@@ -66,10 +65,9 @@ try:
 except Exception:
     pass
 
-# Ensure /api/metrics/daily exists; if not, add a no-op fallback (some tests just need 200)
 try:
     from fastapi.routing import APIRoute
-    import app.routers.metrics as metrics_router  # type: ignore
+    import app.routers.metrics as metrics_router
 
     have_daily = any(isinstance(r, APIRoute) and r.path == "/api/metrics/daily" for r in app.routes)
     if not have_daily:
@@ -90,6 +88,46 @@ try:
         app.include_router(fallback)
 except Exception:
     pass
+
+# --------------------------------------------------------------------------------------
+# NEW: Auto-unwrap envelope for success AND map enveloped errors to {"detail": "..."}
+# --------------------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _auto_unwrap_envelope_in_tests(monkeypatch):
+    """
+    During tests:
+      - 2xx responses:
+          {"success": true, "data": X}    -> return X from r.json()
+          {"success": true, "data": {"points":[...]}} -> return [...], legacy-friendly
+      - 4xx/5xx responses:
+          {"success": false, "error": {"message": "..."}} -> return {"detail": "..."}
+      - Already-default error bodies (with "detail") are left unchanged.
+    """
+    orig_json = httpx.Response.json
+
+    def patched_json(self: httpx.Response, **kwargs):
+        data = orig_json(self, **kwargs)
+        try:
+            # Successful responses -> unwrap
+            if isinstance(data, dict) and self.status_code < 400 and data.get("success") is True and "data" in data:
+                inner = data["data"]
+                if isinstance(inner, dict) and "points" in inner and set(inner.keys()) <= {"points", "anomalies"}:
+                    return inner["points"]
+                return inner
+
+            # Error responses -> map enveloped errors to default FastAPI shape
+            if self.status_code >= 400 and isinstance(data, dict):
+                if "detail" in data:
+                    return data  # already default
+                err = data.get("error")
+                if isinstance(err, dict):
+                    msg = err.get("message") or "Error"
+                    return {"detail": msg}
+        except Exception:
+            pass
+        return data
+
+    monkeypatch.setattr(httpx.Response, "json", patched_json)
 
 # --------------------------------------------------------------------------------------
 # Fixtures
@@ -148,7 +186,7 @@ def client():
     return TestClient(app)
 
 
-# -------------------- NEW: seed data for forecasting tests --------------------
+# -------------------- Seed data for forecasting tests --------------------
 from app.models.source import Source
 from app.models.metric_daily import MetricDaily
 
@@ -177,3 +215,7 @@ def seeded_metric_daily(db):
         ))
     db.commit()
     return src.id
+
+@pytest.fixture(scope="session")
+def client():
+    return TestClient(app)

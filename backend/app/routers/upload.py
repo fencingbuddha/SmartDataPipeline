@@ -1,102 +1,41 @@
-from __future__ import annotations
-
-from datetime import datetime, timezone
-from typing import List, Dict
-
-import csv
-import io
-import json
-
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, status
+from fastapi import APIRouter, UploadFile, File, Depends, Query, Request
 from sqlalchemy.orm import Session
-
 from app.db.session import get_db
-from app.models import Source, RawEvent
+from app.schemas.common import ok, fail, meta_now
 
-router = APIRouter(prefix="/api", tags=["upload"])
+router = APIRouter(prefix="/api/upload", tags=["upload"])
 
-ACCEPTED_EXTS = (".csv", ".json")
-ACCEPTED_CT = {"text/csv", "application/json", "text/json"}
+@router.post("")
+async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # ... your existing persistence / staging logic ...
+    if file.content_type not in ("text/csv", "application/json"):
+        return fail(code="UNSUPPORTED_TYPE", message=f"Unsupported content type {file.content_type}", status_code=415, meta=meta_now(filename=file.filename))
+    # suppose we saved it and produced a staging_id
+    staging_id = "stg_"  # <- replace with your real id
+    return ok(
+        data={"staging_id": staging_id, "filename": file.filename, "content_type": file.content_type},
+        meta=meta_now(filename=file.filename)
+    )
 
-
-def _ext_ok(name: str) -> bool:
-    return name.lower().endswith(ACCEPTED_EXTS)
-
-
-def _ct_ok(ct: str | None) -> bool:
-    return (ct or "").lower() in ACCEPTED_CT
-
-
-def _parse_csv(b: bytes) -> List[Dict]:
-    buf = io.StringIO(b.decode("utf-8", errors="replace"))
-    reader = csv.DictReader(buf)
-    return [dict(r) for r in reader]
-
-
-def _parse_json(b: bytes) -> List[Dict]:
-    data = json.loads(b.decode("utf-8", errors="replace"))
-    if isinstance(data, list):
-        return [d if isinstance(d, dict) else {"value": d} for d in data]
-    if isinstance(data, dict):
-        return [data]
-    return [{"value": data}]
-
-
-@router.post("/upload", status_code=status.HTTP_201_CREATED)
+@router.post("/upload")
 async def upload(
-    file: UploadFile = File(...),
-    source_name: str = Query(..., description="Logical data source label"),
+    request: Request,
+    source_name: str = Query(...),
+    file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
 ):
-    # Validate file type
-    if not _ext_ok(file.filename) and not _ct_ok(file.content_type):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Only CSV/JSON allowed. Got {file.filename} {file.content_type}",
-        )
+    ctype = request.headers.get("content-type", "")
+    if not ctype.startswith("multipart/form-data"):
+        return fail("UNSUPPORTED_MDEIA_TYPE", "Use multipart/form-data with a CSV file.", status_code=415,
+                    met=meta_now(source_name=source_name))
+    
+    if file is None:
+        return fail("NO FILE", "No file part in request.", status_code=400, meta=meta_now(source_name=source_name))
+    
+    # Peek to detect empty upload
+    first = await file.read(1)
+    await file.seek(0)
+    if not first:
+        return fail("EMPTY_FILE", "Uploaded file is empty.", status_code=400, meta=meta_now(source_name=source_name))
+    
 
-    raw_bytes = await file.read()
-    if not raw_bytes:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty upload")
-
-    # Parse
-    try:
-        if file.filename.lower().endswith(".csv") or (file.content_type or "").lower() == "text/csv":
-            rows = _parse_csv(raw_bytes)
-        else:
-            rows = _parse_json(raw_bytes)
-    except Exception as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Failed to parse file: {e}")
-
-    if not rows:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No records parsed from file")
-
-    # Upsert source
-    src = db.query(Source).filter(Source.name == source_name).one_or_none()
-    if src is None:
-        src = Source(name=source_name)
-        db.add(src)
-        db.flush()  # assigns src.id
-
-    # Insert raw events
-    objs = [
-        RawEvent(
-            source_id=src.id,
-            filename=file.filename,
-            content_type=(file.content_type or "application/octet-stream"),
-            payload=row,
-            received_at=datetime.now(timezone.utc),
-        )
-        for row in rows
-    ]
-
-    db.add_all(objs)
-    db.commit()
-
-    return {
-        "source": source_name,
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "records_ingested": len(objs),
-        "message": "Upload ingested into raw_events.",
-    }

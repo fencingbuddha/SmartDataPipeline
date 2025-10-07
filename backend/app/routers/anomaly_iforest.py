@@ -1,97 +1,167 @@
 from __future__ import annotations
+from typing import Optional, List
+from datetime import date, datetime, timezone
+from statistics import mean, pstdev
 
-from datetime import date, datetime
-from typing import Optional, Iterable, List
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
 
-import pandas as pd
-from fastapi import APIRouter, Query, HTTPException
-from pydantic import BaseModel
+from app.db.session import get_db
+from app.schemas.common import ok, fail, ResponseMeta
+from app.services.metrics import fetch_metric_daily
+from app.models import source as models_source
 
-from app.services.anomaly_iforest import detect_iforest, IFParams
-
-router = APIRouter(prefix="/api/metrics/anomaly", tags=["metrics-anomaly"])
-
-
-class IFPoint(BaseModel):
-    metric_date: date
-    value: float
-    score: float
-    is_outlier: bool
+router = APIRouter(prefix="/api/metrics/anomaly", tags=["anomaly"])
 
 
-class IFResponse(BaseModel):
-    points: List[IFPoint]
+def _meta(**params) -> ResponseMeta:
+    clean = {k: v for k, v in params.items() if v is not None}
+    return ResponseMeta(
+        params=clean or None,
+        generated_at=datetime.now(timezone.utc).isoformat()
+    )
 
 
-@router.get("/iforest", response_model=IFResponse)
+def _resolve_source_id(db: Session, source_id: Optional[int], source_name: Optional[str]) -> Optional[int]:
+    if source_id is not None:
+        return source_id
+    if source_name:
+        sid = db.query(models_source.Source.id)\
+                .filter(models_source.Source.name == source_name)\
+                .scalar()
+        return sid
+    return None
+
+
+@router.get("/iforest")
 def anomaly_iforest(
-    source_name: str,
-    metric: str,
-    start_date: date,
-    end_date: date,
-    contamination: float = Query(0.05, ge=0.001, le=0.5),
-    n_estimators: int = Query(100, ge=10, le=1000),
+    source_name: str | None = Query(None, description="Logical dataset/source name"),
+    source_id: int | None = Query(None, description="Numeric source id (optional)"),
+    metric: str = Query(..., description="Metric to analyze (e.g., events_total)"),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    contamination: float = Query(0.05, ge=0.001, le=0.5, description="Expected fraction of outliers"),
+    db: Session = Depends(get_db),
 ):
     """
-    Isolation Forest anomaly detection over MetricDaily time series.
-
-    This endpoint intentionally does a lazy import of the data-fetch helper so the
-    router can be imported even if the helper isn't implemented yet. Tests can
-    monkeypatch `app.services.metrics.fetch_metric_daily_as_df` safely.
+    Isolation Forest anomaly detection on daily metric values.
+    Returns points: [{date, value, is_outlier, score}], where score > 0 => more normal.
     """
+    sid = _resolve_source_id(db, source_id, source_name)
+    if source_name and sid is None:
+        return fail(code="UNKNOWN_SOURCE", message=f"Unknown source: {source_name}", status_code=404, meta=_meta(source_name=source_name))
 
-    from app.services import metrics as metrics_service 
-
-    fetch_metric_daily_as_df = getattr(metrics_service, "fetch_metric_daily_as_df", None)
-    if fetch_metric_daily_as_df is None:
-        raise HTTPException(
-            status_code=500,
-            detail="fetch_metric_daily_as_df not implemented in app.services.metrics",
-        )
-
-    # Fetch series as a DataFrame with at least ['metric_date','value']
-    df: Optional[pd.DataFrame] = fetch_metric_daily_as_df(
-        source_name=source_name,
+    rows = fetch_metric_daily(
+        db,
+        source_id=sid,
         metric=metric,
         start_date=start_date,
         end_date=end_date,
-        fields=("metric_date", "value"),
+        limit=10_000,
     )
 
-    if df is None:
-        # Unknown source or metric
-        raise HTTPException(status_code=404, detail="Unknown source_name or metric")
+    # Build series in time order
+    series_dates: List[date] = []
+    series_vals: List[float] = []
 
-    if df.empty:
-        return IFResponse(points=[])
+    def val_of(r) -> float | None:
+        for k in ("value", "value_sum", "value_avg", "value_count"):
+            v = getattr(r, k, None)
+            if v is not None:
+                return float(v)
+        return None
 
-    # Ensure proper dtypes & ordering
-    df = df.copy()
-    df["metric_date"] = pd.to_datetime(df["metric_date"])
-    df = df.sort_values("metric_date")
+    for r in rows:
+        v = val_of(r)
+        series_dates.append(r.metric_date)
+        series_vals.append(v if v is not None else float("nan"))
 
-    # Run Isolation Forest
-    out = detect_iforest(
-        df,
-        IFParams(contamination=contamination, n_estimators=n_estimators, random_state=42),
-    )
-
-    # Build response
-    points: List[IFPoint] = []
-    for row in out.itertuples(index=False):
-        md = getattr(row, "metric_date")
-        if isinstance(md, pd.Timestamp):
-            md = md.date()
-        elif isinstance(md, datetime):
-            md = md.date()
-
-        points.append(
-            IFPoint(
-                metric_date=md,
-                value=float(getattr(row, "value")),
-                score=float(getattr(row, "score")),
-                is_outlier=bool(getattr(row, "is_outlier")),
-            )
+    # If there are too few finite values, bail gracefully
+    finite = [x for x in series_vals if x == x]  # NaN check
+    if len(finite) < 5:
+        return ok(
+            data={"points": [
+                {"date": d, "value": (v if v == v else None), "is_outlier": False, "score": None}
+                for d, v in zip(series_dates, series_vals)
+            ]},
+            meta=_meta(
+                source_id=sid, source_name=source_name, metric=metric,
+                start_date=str(start_date) if start_date else None,
+                end_date=str(end_date) if end_date else None,
+                method="iforest", contamination=contamination, reason="insufficient_data"
+            ),
         )
 
-    return IFResponse(points=points)
+    # Fit Isolation Forest if available; otherwise fall back to rolling-z as a reasonable proxy
+    points: List[dict] = []
+    try:
+        import numpy as np
+        from sklearn.ensemble import IsolationForest
+
+        X = np.array([[x] for x in series_vals], dtype=float)
+        # Replace NaNs with local mean to avoid breaking the model
+        mask = ~np.isfinite(X[:, 0])
+        if mask.any():
+            # simple fill with overall finite mean
+            fill = float(np.nanmean(X[:, 0]))
+            X[mask, 0] = fill
+
+        model = IsolationForest(
+            contamination=contamination,
+            n_estimators=200,
+            random_state=42,
+        )
+        model.fit(X)
+        preds = model.predict(X)          # 1 (inlier) or -1 (outlier)
+        scores = model.decision_function(X)  # higher => more normal
+
+        for d, v, pred, sc in zip(series_dates, series_vals, preds, scores):
+            points.append({
+                "date": d,
+                "value": (v if v == v else None),
+                "is_outlier": (pred == -1),
+                "score": float(sc),
+            })
+
+        method_used = "iforest"
+    except Exception:
+        # Fallback: rolling z-score proxy
+        window = 7
+        z_thresh = 3.0
+        history: list[float] = []
+        for d, v in zip(series_dates, series_vals):
+            val = v if v == v else None
+            z = None
+            is_outlier = False
+            if len(history) >= window and val is not None:
+                last = history[-window:]
+                mu = mean(last)
+                sd = pstdev(last)
+                if sd == 0:
+                    is_outlier = (val != mu)
+                    z = 0.0
+                else:
+                    z = (val - mu) / sd
+                    is_outlier = abs(z) >= z_thresh
+            points.append({
+                "date": d,
+                "value": val,
+                "is_outlier": is_outlier,
+                "score": float(z) if z is not None else None,
+            })
+            if val is not None:
+                history.append(val)
+        method_used = "rolling_z (fallback)"
+
+    return ok(
+        data={"points": points},
+        meta=_meta(
+            source_id=sid,
+            source_name=source_name,
+            metric=metric,
+            start_date=str(start_date) if start_date else None,
+            end_date=str(end_date) if end_date else None,
+            method=method_used,
+            contamination=contamination,
+        ),
+    )
