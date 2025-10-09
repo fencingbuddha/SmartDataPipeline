@@ -6,7 +6,11 @@ def test_forecast_run_and_get(client, seeded_metric_daily):
     r = client.post("/api/forecast/run", params={
         "source_name":"demo-source","metric":"value","horizon_days":7
     })
-    assert r.status_code == 200 and r.json()["inserted"] == 7
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["data"]["horizon_days"] == 7
+    assert body["data"]["inserted"] == 7
 
     # Last observed = 2025-09-30 (from fixture), so forecast starts 2025-10-01
     start = date(2025, 10, 1)

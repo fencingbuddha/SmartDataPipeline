@@ -86,6 +86,20 @@ def write_forecast(db: Session, source_id: int, metric: str, df: pd.DataFrame, m
 def run_forecast(db: Session, source_name: str, metric: str, horizon_days: int = 7) -> int:
     source = db.query(Source).filter_by(name=source_name).one()
     s = fetch_metric_series(db, source_name, metric)
-    df = train_sarimax_and_forecast(s, horizon_days=horizon_days)
+    MIN_POINTS = 14
+    if len(s) < MIN_POINTS:
+        last_val = float(s.iloc[-1]) if len(s) else 0.0
+        start_day = (pd.to_datetime(s.index[-1]).date() + timedelta(days=1)) if len(s) else date.today()
+        idx = pd.date_range(start=start_day, periods=horizon_days, freq="D")
+        df = pd.DataFrame(
+            {
+                "yhat": [last_val] * horizon_days,
+                "yhat_lower": [last_val] * horizon_days,
+                "yhat_upper": [last_val] * horizon_days,
+            },
+            index=idx,
+        )
+    else:
+        df = train_sarimax_and_forecast(s, horizon_days=horizon_days)
     write_forecast(db, source.id, metric, df)
     return len(df)
