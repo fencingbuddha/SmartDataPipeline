@@ -1,19 +1,22 @@
 type Point = { date: string; value: number };
 type Anomaly = { date: string; value: number; z?: number };
+type ForecastPoint = { date: string; yhat: number };
 
 export default function MetricDailyChart({
   rows,
+  forecast = [],
   anomalies = [],
   height = 260,
   yLabel = "Value",
 }: {
   rows: Point[];
+  forecast?: ForecastPoint[];
   anomalies?: Anomaly[];
   height?: number;
   yLabel?: string;
 }) {
   const PAD = { t: 20, r: 16, b: 32, l: 44 };
-  const W = Math.max(480, rows.length * 48);
+  const W = Math.max(480, Math.max(rows.length, forecast.length) * 48);
   const H = height;
 
   // Normalize + sort
@@ -21,9 +24,19 @@ export default function MetricDailyChart({
     .filter((d) => isFiniteNum(d.value) && d.date)
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  const xVals = data.map((d) => d.date);
-  const yVals = data.map((d) => d.value);
-  const xmin = 0;
+  const fc = (forecast ?? [])
+    .filter((f) => isFiniteNum(f.yhat) && f.date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // Use union of dates so forecast beyond history is visible
+  const xVals = Array.from(new Set([...data.map(d => d.date), ...fc.map(f => f.date)])).sort();
+  const yVals = [
+    ...data.map((d) => d.value),
+    ...fc.map((f) => f.yhat),
+  ];
+
+
+    const xmin = 0;
   const xmax = Math.max(0, xVals.length - 1);
   const ymin = 0;
   const ymax = niceMax(max(yVals), 5);
@@ -34,6 +47,14 @@ export default function MetricDailyChart({
 
   // Line path
   const path = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(d.value)}`).join(" ");
+
+  const fcPath = fc.length
+    ? fc.map((d, idx) => {
+        const i = xVals.indexOf(d.date);
+        return `${idx === 0 ? "M" : "L"} ${x(i)} ${y(d.yhat)}`;
+      }).join(" ")
+    : "";
+
 
   // X ticks: first, middle(s), last
   const tickIdxs = pickTicks(xVals.length);
@@ -81,6 +102,10 @@ export default function MetricDailyChart({
 
         {/* Line */}
         <path d={path} fill="none" stroke="#6ee7b7" strokeWidth={2} />
+        {fcPath && (
+          <path d={fcPath} fill="none" stroke="#60a5fa" strokeWidth={2} strokeDasharray="6 4" />
+        )}
+
 
         {/* Points */}
         {data.map((d, i) => (
