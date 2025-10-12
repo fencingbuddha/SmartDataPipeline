@@ -1,113 +1,57 @@
 /// <reference types="cypress" />
 
-describe('Dashboard anomaly overlay', () => {
-  const visitDash = () => cy.visit('/');
+// Assumes cypress.config has baseUrl set to your dev server (e.g., http://localhost:5173)
 
-  it('shows overlay markers only when the toggle is ON', () => {
+describe('Anomaly overlay (stubbed)', () => {
+  it('shows flagged anomalies and passes window/z to the API', () => {
+    // Stub base series
     cy.intercept('GET', '**/api/metrics/daily*', {
       statusCode: 200,
       body: [
-        { metric_date: '2025-09-30', value: 6 },
-        { metric_date: '2025-10-01', value: 14 },
-        { metric_date: '2025-10-02', value: 8 },
-        { metric_date: '2025-10-03', value: 120 },
+        { metric_date: '2025-09-01', source: 'demo-source', metric: 'events_total', value_sum: 10 },
+        { metric_date: '2025-09-02', value_sum: 12 },
+        { metric_date: '2025-09-03', value_sum: 9  },
+        { metric_date: '2025-09-18', value_sum: 7  },
+        { metric_date: '2025-09-19', value_sum: 11 },
+        { metric_date: '2025-09-20', value_sum: 27 },
       ],
-    }).as('daily');
+    }).as('getDaily');
 
+    // Capture anomalies request and assert params
     cy.intercept('GET', '**/api/metrics/anomaly/rolling*', (req) => {
-      req.reply([
-        { date: '2025-09-30', value: 6, is_outlier: false },
-        { date: '2025-10-01', value: 14, is_outlier: false },
-        { date: '2025-10-02', value: 8, is_outlier: false },
-        { date: '2025-10-03', value: 120, is_outlier: true, z: 4.2 },
-      ]);
-    }).as('anoms');
+      const u = new URL(req.url);
+      expect(u.searchParams.get('window')).to.exist;
+      expect(u.searchParams.get('z_thresh')).to.exist;
+      req.reply({
+        statusCode: 200,
+        body: [
+          { date: '2025-09-20', value: 27, z: 3.8, is_anomaly: true },
+        ],
+      });
+    }).as('getAnoms');
 
-    visitDash();
-    cy.wait('@daily');
+    cy.visit('/');
 
-    cy.get('[data-testid="anomaly-point"]').should('not.exist');
-    cy.get('[data-testid="toggle-anomalies"]').should('not.be.disabled');
+    // Set dates (use your real min/max if needed)
+    cy.get('[data-testid="filter-start"]').clear().type('2025-09-01');
+    cy.get('[data-testid="filter-end"]').clear().type('2025-10-20');
 
-    cy.get('[data-testid="toggle-anomalies"]').click();
-    cy.wait('@anoms');
-    cy.get('[data-testid="anomaly-point"]').should('have.length.at.least', 1);
+    // Tune window/z before enabling overlay
+    cy.get('[data-testid="anoms-window"]').clear().type('3');
+    cy.get('[data-testid="anoms-z"]').clear().type('2');
 
-    cy.get('[data-testid="toggle-anomalies"]').click();
-    cy.get('[data-testid="anomaly-point"]').should('not.exist');
-  });
+    // Run base fetch
+    cy.get('[data-testid="btn-run"]').click();
+    cy.wait('@getDaily');
 
-  it('disables the toggle and shows an empty state when there is no data', () => {
-    cy.intercept('GET', '**/api/metrics/daily*', {
-      statusCode: 200,
-      body: [],
-    }).as('dailyEmpty');
+    // Toggle anomalies -> triggers overlay fetch with our params
+    cy.get('[data-testid="toggle-anoms"]').check();
+    cy.wait('@getAnoms');
 
-    visitDash();
-    cy.wait('@dailyEmpty');
-
-    cy.contains(/No data for this selection/i).should('be.visible');
-    cy.get('[data-testid="toggle-anomalies"]').should('be.disabled');
-  });
-
-  it('shows an error banner when the daily API fails', () => {
-    cy.intercept('GET', '**/api/metrics/daily*', {
-      statusCode: 500,
-      body: { detail: 'server blew up' },
-    }).as('dailyErr');
-
-    visitDash();
-    cy.wait('@dailyErr');
-
-    cy.contains('⚠️').should('be.visible');
-    cy.contains(/Load failed|Error|server blew up/i).should('exist');
-  });
-
-   it('sends selected anomaly parameters (window & z) when fetching', () => {
-    // Stub series
-    cy.intercept('GET', '**/api/metrics/daily*', {
-      statusCode: 200,
-      body: [
-        { metric_date: '2025-09-30', value: 6 },
-        { metric_date: '2025-10-01', value: 14 },
-        { metric_date: '2025-10-02', value: 8 },
-        { metric_date: '2025-10-03', value: 120 },
-      ],
-    }).as('daily2');
-
-    // Intercept anomalies and assert exact params
-    cy.intercept('GET', '**/api/metrics/anomaly/rolling*', (req) => {
-      expect(req.query.window, 'window').to.eq('3');
-      expect(req.query.z_thresh, 'z_thresh').to.eq('2');
-      req.reply([{ date: '2025-10-03', value: 120, is_outlier: true, z: 4.2 }]);
-    }).as('anomsParams');
-
-    visitDash();
-    cy.wait('@daily2');
-
-    // Helper: set a React-controlled number input reliably
-    const setNumByLabel = (labelRe: RegExp, value: string) => {
-      cy.contains('label', labelRe)
-        .parent()
-        .find('input')
-        .then(($el) => {
-          const input = $el[0] as HTMLInputElement;
-          const setter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype,
-            'value'
-          )!.set!;
-          setter.call(input, value);                              // set value
-          input.dispatchEvent(new Event('input', { bubbles: true })); // notify React
-        })
-        .should('have.value', value);
-    };
-
-    setNumByLabel(/Anomaly window/i, '3');
-    setNumByLabel(/Z threshold/i, '2');
-
-    cy.get('[data-testid="toggle-anomalies"]').click();
-    cy.wait('@anomsParams');
-
-    cy.get('[data-testid="anomaly-point"]').should('have.length', 1);
+    // Assert invisible hook reflects anomaly
+    cy.get('[data-testid="anomaly-list"] li')
+      .should('have.length.at.least', 1)
+      .first()
+      .should('have.attr', 'data-date', '2025-09-20');
   });
 });

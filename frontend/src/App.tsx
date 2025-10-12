@@ -1,12 +1,5 @@
-import MetricDailyCard from "./components/MetricDailyCard";
+import DashboardPage from "./pages/DashboardPage";
 
-function App() {
-  return (
-    <div style={{ maxWidth: 720, margin: "32px auto", fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ marginTop: 0 }}>Smart Data Pipeline – Dashboard (Seed)</h1>
-      <MetricDailyCard />
-    </div>
-  );
+export default function App() {
+  return <DashboardPage />;
 }
-
-export default App;

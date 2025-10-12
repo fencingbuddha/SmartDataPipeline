@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import MetricDailyChart from "./MetricDailyChart";
+import { Card, Stack, Tile, Text } from "../ui";
 
 /**
  * KPI card with filters, CSV export, and configurable anomaly overlay.
@@ -61,24 +62,17 @@ export default function MetricDailyCard() {
   const [showForecast, setShowForecast] = useState(false);
   const [forecast, setForecast] = useState<ForecastPoint[]>([]);
 
- /** Load sources once */
+  /** Load sources once */
   useEffect(() => {
     (async () => {
       try {
         const r = await fetch(`${API_BASE}/api/sources`);
         const js: any = await r.json();
-
-        // Accept either a raw array or { data: [...] }
         const arr: any[] = Array.isArray(js) ? js : js?.data ?? [];
-
-        // Normalize to [{id, name}]
         const data: Source[] = arr.map((s: any) =>
           typeof s === "string" ? { id: s, name: s } : { id: s.id ?? s.name, name: s.name ?? String(s) }
         );
-
         setSources(data);
-
-        // Auto-select a source if none selected
         if (data.length && !data.find((s) => s.name === sourceName)) {
           setSourceName(data[0].name);
         }
@@ -118,7 +112,7 @@ export default function MetricDailyCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources, sourceName, autoLoaded]);
 
-  /** Clear anomalies whenever filters change (prevents stale overlay). */
+  /** Clear overlays whenever filters change */
   useEffect(() => { setAnoms([]); setForecast([]); }, [sourceName, metric, start, end]);
 
   async function load() {
@@ -144,20 +138,17 @@ export default function MetricDailyCard() {
       arr.sort((a, b) => (getDate(a) || "").localeCompare(getDate(b) || ""));
       setRows(arr);
 
-      // anomalies (if toggle is on)
       if (showAnoms && arr.length) {
         await fetchAnomalies(sourceName, metric, start, end, windowN, zThresh, algo, setAnoms, setError);
       } else {
         setAnoms([]);
       }
 
-      // ✅ forecast (if toggle is on)
       if (showForecast && arr.length) {
         await fetchForecast(sourceName, metric, start, end, setForecast, setError);
       } else {
         setForecast([]);
       }
-
     } catch (e: any) {
       setRows([]);
       setAnoms([]);
@@ -168,8 +159,7 @@ export default function MetricDailyCard() {
     }
   }
 
-
-  /** Re-fetch anomalies when toggled on (without requiring Apply) */
+  /** Re-fetch overlays on toggle/param changes */
   useEffect(() => {
     (async () => {
       if (!showAnoms) return setAnoms([]);
@@ -179,7 +169,6 @@ export default function MetricDailyCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAnoms]);
 
-  /** Re-fetch forecast when toggled on (without requiring Apply) */
   useEffect(() => {
     (async () => {
       if (!showForecast) return setForecast([]);
@@ -189,8 +178,6 @@ export default function MetricDailyCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showForecast]);
 
-
-  /** Re-fetch anomalies when params change (if toggle is on and we have data) */
   useEffect(() => {
     (async () => {
       if (!showAnoms || !rows.length) return;
@@ -199,7 +186,6 @@ export default function MetricDailyCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [windowN, zThresh, algo]);
 
-  /** Re-fetch forecast when filters change (if toggle is on and we have data) */
   useEffect(() => {
     (async () => {
       if (!showForecast || !rows.length) return;
@@ -262,18 +248,15 @@ export default function MetricDailyCard() {
     };
   }, [rows]);
 
-// Prevent "sources.map is not a function" when data hasn't loaded yet
-const safeSources = useMemo(
-  () => (Array.isArray(sources) ? sources : []),
-  [sources]
-);
+  const safeSources = useMemo(() => (Array.isArray(sources) ? sources : []), [sources]);
 
   /** UI */
   return (
-    <div style={{ padding: 16, border: "1px solid #333", borderRadius: 12 }}>
-      <h2 style={{ marginTop: 0 }}>Daily KPIs ({metric})</h2>
+    <Card elevation={1} className="sd-my-4">
+      <Tile title={`Daily KPIs (${metric})`} />
+
       {/* Filters row */}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
+      <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap", alignItems: "end" }}>
         <Labeled label="Source">
           <select
             value={sourceName || ""}
@@ -284,9 +267,7 @@ const safeSources = useMemo(
               <option value="" disabled>(no sources yet)</option>
             ) : (
               safeSources.map((s: any) => (
-                <option key={s.id ?? s.name} value={s.name}>
-                  {s.name}
-                </option>
+                <option key={s.id ?? s.name} value={s.name}>{s.name}</option>
               ))
             )}
           </select>
@@ -295,9 +276,7 @@ const safeSources = useMemo(
         <Labeled label="Metric">
           {metricOptions.length ? (
             <select value={metric} onChange={(e) => setMetric(e.target.value)}>
-              {metricOptions.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
+              {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           ) : (
             <>
@@ -351,7 +330,7 @@ const safeSources = useMemo(
           </select>
         </Labeled>
 
-        <button onClick={load} disabled={loading} style={{ padding: "8px 12px" }}>
+        <button onClick={load} disabled={loading} className="sd-btn">
           {loading ? "Loading…" : "Apply"}
         </button>
 
@@ -368,12 +347,12 @@ const safeSources = useMemo(
             setAnoms([]);
           }}
           disabled={loading}
-          style={{ padding: "8px 12px", opacity: 0.9 }}
+          className="sd-btn ghost"
         >
           Reset
         </button>
 
-        <button onClick={handleExportCSV} disabled={loading || exporting || !metric || !sourceName} style={{ padding: "8px 12px" }}>
+        <button onClick={handleExportCSV} disabled={loading || exporting || !metric || !sourceName} className="sd-btn">
           {exporting ? "Exporting…" : "Export CSV"}
         </button>
 
@@ -407,67 +386,68 @@ const safeSources = useMemo(
           />
           Show forecast
         </label>
-
-      </div>
+      </Stack>
 
       {/* Error banner */}
       {error && (
-        <div style={{ color: "#f87171", marginBottom: 8 }} aria-live="polite">
+        <Text className="sd-my-2" variant="small" muted>
           ⚠️ {error}
-        </div>
+        </Text>
       )}
 
       {/* KPI tiles */}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-        <Tile title="Sum" value={fmtNum(kpis.sum)} />
-        <Tile title="Average" value={fmtNum(kpis.avg)} />
-        <Tile title="Count" value={fmtNum(kpis.count)} />
-        <Tile title="Distinct" value={kpis.hasDistinct ? fmtNum(kpis.distinct) : "—"} />
-      </div>
+      <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap" }}>
+        <Tile title="Sum"><Text variant="h3">{fmtNum(kpis.sum)}</Text></Tile>
+        <Tile title="Average"><Text variant="h3">{fmtNum(kpis.avg)}</Text></Tile>
+        <Tile title="Count"><Text variant="h3">{fmtNum(kpis.count)}</Text></Tile>
+        <Tile title="Distinct"><Text variant="h3">{kpis.hasDistinct ? fmtNum(kpis.distinct) : "—"}</Text></Tile>
+      </Stack>
 
       {/* Table */}
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr>
-            {["Date", "Source", "Metric", "Sum", "Avg", "Count", "Distinct"].map((h) => (
-              <th key={h} style={thTd(true)}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const date = getDate(r);
-            const src = pick(r, "source_id", "source");
-            const met = pick(r, "metric", "name");
-            const vSum = pick(r, "value_sum", "sum", "total", "value");
-            const vAvg = pick(r, "value_avg", "avg", "mean", "average");
-            const vCnt = pick(r, "value_count", "count", "rows", "n");
-            const vDst = pick(r, "value_distinct", "distinct", "unique");
-            return (
-              <tr key={`${date}-${i}`}>
-                <td style={thTd()}>{fmt(date)}</td>
-                <td style={thTd()}>{fmt(src)}</td>
-                <td style={thTd()}>{fmt(met)}</td>
-                <td style={thTd()}>{fmt(vSum)}</td>
-                <td style={thTd()}>{fmt(vAvg)}</td>
-                <td style={thTd()}>{fmt(vCnt)}</td>
-                <td style={thTd()}>{fmt(vDst)}</td>
-              </tr>
-            );
-          })}
-          {rows.length === 0 && !loading && (
+      <div className="sd-border" style={{ borderRadius: 10, overflow: "hidden" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
             <tr>
-              <td style={thTd()} colSpan={7}>
-                No data for this selection. Try a wider date range or different filters.
-              </td>
+              {["Date", "Source", "Metric", "Sum", "Avg", "Count", "Distinct"].map((h) => (
+                <th key={h} style={thTd(true)}>{h}</th>
+              ))}
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const date = getDate(r);
+              const src = pick(r, "source_id", "source");
+              const met = pick(r, "metric", "name");
+              const vSum = pick(r, "value_sum", "sum", "total", "value");
+              const vAvg = pick(r, "value_avg", "avg", "mean", "average");
+              const vCnt = pick(r, "value_count", "count", "rows", "n");
+              const vDst = pick(r, "value_distinct", "distinct", "unique");
+              return (
+                <tr key={`${date}-${i}`}>
+                  <td style={thTd()}>{fmt(date)}</td>
+                  <td style={thTd()}>{fmt(src)}</td>
+                  <td style={thTd()}>{fmt(met)}</td>
+                  <td style={thTd()}>{fmt(vSum)}</td>
+                  <td style={thTd()}>{fmt(vAvg)}</td>
+                  <td style={thTd()}>{fmt(vCnt)}</td>
+                  <td style={thTd()}>{fmt(vDst)}</td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && !loading && (
+              <tr>
+                <td style={thTd()} colSpan={7}>
+                  No data for this selection. Try a wider date range or different filters.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       {/* Chart */}
       {rows.length > 0 && (
-        <div style={{ marginTop: 12 }} aria-busy={loading}>
+        <div className="sd-my-4" aria-busy={loading}>
           <MetricDailyChart
             key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}`}
             rows={rows.map((r) => ({
@@ -479,7 +459,7 @@ const safeSources = useMemo(
           />
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -525,18 +505,11 @@ function thTd(header = false): React.CSSProperties {
     background: header ? "#111" : "transparent",
   };
 }
-function Tile({ title, value }: { title: string; value: string | number }) {
-  return (
-    <div style={{ border: "1px solid #2a2a2a", borderRadius: 12, padding: "12px 14px", minWidth: 160 }}>
-      <div style={{ fontSize: 12, color: "#9ca3af" }}>{title}</div>
-      <div style={{ fontSize: 20, fontWeight: 600, marginTop: 4 }}>{value}</div>
-    </div>
-  );
-}
+
 function Labeled(props: React.PropsWithChildren<{ label: string; style?: React.CSSProperties }>) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, ...props.style }}>
-      <label style={{ fontSize: 12, color: "#9ca3af" }}>{props.label}</label>
+    <div className="sd-stack col" style={{ gap: 4, ...props.style }}>
+      <Text variant="small" muted>{props.label}</Text>
       {props.children}
     </div>
   );
@@ -568,7 +541,6 @@ async function fetchAnomalies(
       qs.set("z_thresh", String(zThresh));
       url = `${API_BASE}/api/metrics/anomaly/rolling?${qs.toString()}`;
     } else {
-      // try a slightly higher contamination so a tiny dataset can flag outliers
       qs.set("contamination", "0.15");
       url = `${API_BASE}/api/metrics/anomaly/iforest?${qs.toString()}`;
     }
@@ -577,7 +549,6 @@ async function fetchAnomalies(
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     const js: any = await r.json();
 
-    // ---- robust array extraction (handles {data:{points:[...]}} etc) ----
     const raw: any[] =
       Array.isArray(js) ? js :
       Array.isArray(js?.data) ? js.data :
@@ -586,7 +557,6 @@ async function fetchAnomalies(
       Array.isArray(js?.results) ? js.results :
       [];
 
-    // normalize to your chart shape and filter
     const normalized: AnomPoint[] = raw
       .map((row: any) => {
         const z =
@@ -607,9 +577,8 @@ async function fetchAnomalies(
           value: Number(row.value ?? row.value_sum ?? row.y ?? row.count ?? 0),
           z,
           flagged,
-        };
+        } as any;
       })
-      // plot explicitly-flagged, OR anything exceeding current z threshold
       .filter((r) => r.date && (r.flagged || (typeof r.z === "number" && Math.abs(r.z) >= zThresh)))
       .map(({ date, value, z }) => ({ date, value, z }));
 
@@ -643,7 +612,6 @@ async function fetchForecast(
     if (!r.ok) throw await jsonErr(r);
     const js: any = await r.json();
 
-    // Accept [], {data:[]}, {points:[]}, or {data:{points:[]}}
     const raw: any[] =
       Array.isArray(js) ? js :
       Array.isArray(js?.data) ? js.data :

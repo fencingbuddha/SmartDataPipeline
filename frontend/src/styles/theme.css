@@ -1,0 +1,154 @@
+/* Smart Data Pipeline — UI Foundation (FR-6.A)
+   Tokens + Primitives (no behavior changes)
+   Drop this file in src/styles/theme.css and import it once in main.tsx:
+   import "./styles/theme.css";
+*/
+
+:root {
+  /* Palette */
+  --sd-color-bg: #0f1320;
+  --sd-color-surface: #131a2a;
+  --sd-color-surface-2: #182033;
+  --sd-color-border: #22304d;
+  --sd-color-elev-1: rgba(0,0,0,0.25);
+  --sd-color-text: #e6ecff;
+  --sd-color-text-muted: #aab6d6;
+  --sd-color-primary: #4f7cff;
+  --sd-color-primary-600: #3e69f0;
+  --sd-color-success: #1db954;
+  --sd-color-warning: #ffb020;
+  --sd-color-danger: #ff5d5d;
+  --sd-color-chart-1: #4f7cff;
+  --sd-color-chart-2: #9d7cff;
+  --sd-color-chart-3: #4fd1c5;
+  --sd-color-chart-4: #ffd166;
+  --sd-color-chart-5: #ef476f;
+
+  /* Spacing scale (px) */
+  --sd-space-0: 0;
+  --sd-space-1: 4px;
+  --sd-space-2: 8px;
+  --sd-space-3: 12px;
+  --sd-space-4: 16px;
+  --sd-space-5: 20px;
+  --sd-space-6: 24px;
+  --sd-space-8: 32px;
+  --sd-space-10: 40px;
+  --sd-space-12: 48px;
+
+  /* Radii */
+  --sd-radius-0: 0;
+  --sd-radius-1: 6px;
+  --sd-radius-2: 10px;
+  --sd-radius-3: 14px;
+
+  /* Shadows */
+  --sd-shadow-0: none;
+  --sd-shadow-1: 0 2px 8px rgba(0,0,0,0.2);
+  --sd-shadow-2: 0 6px 18px rgba(0,0,0,0.25);
+
+  /* Typography */
+  --sd-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  --sd-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --sd-text-xs: 12px;
+  --sd-text-sm: 13px;
+  --sd-text-md: 14px;
+  --sd-text-lg: 16px;
+  --sd-text-xl: 20px;
+  --sd-text-2xl: 24px;
+  --sd-text-3xl: 28px;
+
+  --sd-line-compact: 1.2;
+  --sd-line-normal: 1.45;
+}
+
+/* Base */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 800px at 20% -10%, #1a2140 0%, var(--sd-color-bg) 50%) fixed;
+  color: var(--sd-color-text);
+  font-family: var(--sd-font-sans);
+  font-size: var(--sd-text-md);
+  line-height: var(--sd-line-normal);
+}
+
+/* Utilities */
+.sd-border    { border: 1px solid var(--sd-color-border); }
+.sd-muted     { color: var(--sd-color-text-muted); }
+.sd-heading   { font-weight: 600; letter-spacing: 0.2px; }
+
+/* Spacing utilities (y-axis) */
+.sd-my-0 { margin-top: 0; margin-bottom: 0; }
+.sd-my-2 { margin-top: var(--sd-space-2); margin-bottom: var(--sd-space-2); }
+.sd-my-4 { margin-top: var(--sd-space-4); margin-bottom: var(--sd-space-4); }
+.sd-p-0  { padding: 0; }
+.sd-p-2  { padding: var(--sd-space-2); }
+.sd-p-4  { padding: var(--sd-space-4); }
+.sd-p-6  { padding: var(--sd-space-6); }
+.sd-gap-2 { gap: var(--sd-space-2); }
+.sd-gap-4 { gap: var(--sd-space-4); }
+.sd-gap-6 { gap: var(--sd-space-6); }
+
+/* Primitives */
+.sd-card {
+  background: linear-gradient(180deg, var(--sd-color-surface) 0%, var(--sd-color-surface-2) 100%);
+  border-radius: var(--sd-radius-2);
+  border: 1px solid var(--sd-color-border);
+  box-shadow: var(--sd-shadow-1);
+  padding: var(--sd-space-4);
+}
+
+.sd-card.elev-0 { box-shadow: var(--sd-shadow-0); }
+.sd-card.elev-2 { box-shadow: var(--sd-shadow-2); }
+
+.sd-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--sd-space-4);
+  width: 100%;
+}
+
+.sd-stack {
+  display: flex;
+  gap: var(--sd-space-4);
+}
+.sd-stack.row { flex-direction: row; align-items: center; }
+.sd-stack.col { flex-direction: column; }
+
+.sd-tile {
+  background: var(--sd-color-surface-2);
+  border: 1px solid var(--sd-color-border);
+  border-radius: var(--sd-radius-1);
+  padding: var(--sd-space-4);
+}
+
+/* Buttons — purely presentational */
+.sd-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: var(--sd-radius-1);
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: var(--sd-text-sm);
+  cursor: pointer;
+  color: #fff;
+  background: var(--sd-color-primary);
+  transition: transform 0.06s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.sd-btn:hover { background: var(--sd-color-primary-600); }
+.sd-btn:active { transform: translateY(1px); }
+.sd-btn.ghost {
+  background: transparent;
+  border-color: var(--sd-color-border);
+  color: var(--sd-color-text);
+}
+
+/* Simple typography tokens */
+.h1 { font-size: var(--sd-text-3xl); line-height: var(--sd-line-compact); }
+.h2 { font-size: var(--sd-text-2xl); line-height: var(--sd-line-compact); }
+.h3 { font-size: var(--sd-text-xl);  line-height: var(--sd-line-compact); }
+.small { font-size: var(--sd-text-sm); }
+.mono { font-family: var(--sd-font-mono); }
