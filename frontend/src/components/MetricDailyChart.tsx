@@ -123,6 +123,20 @@ export default function MetricDailyChart({
           </g>
         ))}
       </svg>
+      {Array.isArray(anomalies) && anomalies.length > 0 && (
+        <ul data-testid="anomaly-list" style={{ display: "none" }}>
+          {anomalies.map((a, i) => (
+            <li key={i} data-date={a.date} data-value={a.value} />
+          ))}
+        </ul>
+      )}
+      {Array.isArray(forecast) && forecast.length > 0 && (
+        <ul data-testid="forecast-list" style={{ display: "none" }}>
+          {forecast.map((p, i) => (
+            <li key={i} data-date={p.date} data-yhat={p.yhat} />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
