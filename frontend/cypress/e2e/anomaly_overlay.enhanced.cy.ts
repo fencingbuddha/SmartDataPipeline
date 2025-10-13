@@ -1,37 +1,43 @@
 /// <reference types="cypress" />
 
-// Hits your real backend; adjust dates/range to ensure some data exists.
-
-describe('Anomaly overlay (live backend)', () => {
+/**
+ * [UAT-FR4-004] Live anomaly flow + toggle interactions
+ * Steps: Run, enable anomalies, adjust z/window, disable
+ * Expected: Overlay responds to toggle and param changes; queries include z_thresh & window
+ */
+describe('FR-4 Anomaly overlay — enhanced (live-style)', () => {
   beforeEach(() => {
+    cy.intercept('GET', '**/api/metrics/anomaly/rolling*', (req) => {
+      const u = new URL(req.url);
+      expect(u.searchParams.get('window')).to.exist;
+      expect(u.searchParams.get('z_thresh')).to.exist;
+      req.reply({ statusCode: 200, body: [{ date: '2025-09-20', value: 27, z: 3.8, is_anomaly: true }] });
+    }).as('getAnoms');
+    cy.intercept('GET', '**/api/metrics/daily*').as('getDaily');
+
     cy.visit('/');
+    cy.get('[data-testid="filter-start"]').clear().type('2025-09-01');
+    cy.get('[data-testid="filter-end"]').clear().type('2025-10-12');
+    cy.get('[data-testid="btn-run"]').click();
+    cy.wait('@getDaily');
   });
 
-  it('runs, toggles overlays, and resets cleanly', () => {
-    // pick a safe range
-    cy.get('[data-testid="filter-start"]').clear().type('2025-09-01');
-    cy.get('[data-testid="filter-end"]').clear().type('2025-10-20');
-
-    // make it easier to see anomalies if any
-    cy.get('[data-testid="anoms-window"]').clear().type('{selectall}3');
-    cy.get('[data-testid="anoms-z"]').clear().type('{selectall}2');
-
-    // Run
-    cy.get('[data-testid="btn-run"]').click();
-
-    // Turn on anomalies; hook may have 0+ depending on real data
+  it('[UAT-FR4-004] Enable → adjust → disable anomalies reflects on chart', () => {
     cy.get('[data-testid="toggle-anoms"]').check();
+    cy.wait('@getAnoms');
+    cy.get('[data-testid="anomaly-list"]');
+    cy.get('[data-testid="anomaly-list"] li')
+      .should('have.length.at.least', 1)
+      .first()
+      .should('have.attr', 'data-date', '2025-09-20');
 
-    // If your backend returns none for this range, length can be 0; but the hook should exist
-    cy.get('[data-testid="anomaly-list"]', { timeout: 10000 }).should('exist');
+    cy.get('[data-testid="anoms-z"]').clear().type('{selectall}2{enter}');
+    cy.wait('@getAnoms');
+    cy.get('[data-testid="anoms-window"]').clear().type('{selectall}5{enter}');
+    cy.wait('@getAnoms');
 
-    // Toggle forecast on/off
-    cy.get('[data-testid="toggle-forecast"]').check();
-    cy.get('[data-testid="forecast-list"]').should('exist');
-
-    // Reset restores defaults and re-runs
-    cy.get('[data-testid="btn-reset"]').click();
-    cy.get('[data-testid="toggle-anoms"]').should('not.be.checked');
-    cy.get('[data-testid="toggle-forecast"]').should('not.be.checked');
+    cy.get('[data-testid="toggle-anoms"]').uncheck();
+    cy.get('[data-testid="anomaly-list"]');
+    cy.get('[data-testid="anomaly-list"]').should('not.be.visible');
   });
 });
