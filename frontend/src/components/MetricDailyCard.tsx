@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import MetricDailyChart from "./MetricDailyChart";
 import { Card, Stack, Tile, Text } from "../ui";
 
+import { buildUrl } from "../lib/api";
+import { useMetricDaily } from "../hooks/useMetricDaily";
+import { useAnomalies } from "../hooks/useAnomalies";
+import { useForecast } from "../hooks/useForecast";
+
 /**
- * KPI card with filters, CSV export, and configurable anomaly overlay.
- * - Sources -> /api/sources
- * - Metrics per source -> /api/metrics/names?source_name=...
- * - Daily series -> /api/metrics/daily
- * - Anomalies:
- *     - Rolling Z -> /api/metrics/anomaly/rolling?window=&z_thresh=
- *     - Isolation Forest -> /api/metrics/anomaly/iforest?contamination=
- * - UI params: window, z-threshold, algorithm (rolling|iforest)
- * - Graceful loading/empty/error states
- * - Toggle disabled when no data or loading; overlay cleared on filter changes
+ * KPI card with filters, CSV export, and configurable anomaly/forecast overlays.
+ * Now uses hooks:
+ *  - useMetricDaily -> /api/metrics/daily
+ *  - useAnomalies   -> /api/metrics/anomaly/rolling (or iforest)
+ *  - useForecast    -> /api/forecast/daily
  */
 
 type Row = {
@@ -26,12 +26,7 @@ type Row = {
 };
 
 type Source = { id: number | string; name: string };
-type AnomPoint = { date: string; value: number; z?: number };
 
-type ForecastPoint = { date: string; yhat: number };
-const FC_CACHE = new Map<string, ForecastPoint[]>();
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const METRIC_SUGGESTIONS = ["events_total", "errors_total", "revenue", "signups", "sessions"];
 
 export default function MetricDailyCard() {
@@ -47,189 +42,148 @@ export default function MetricDailyCard() {
   const [zThresh, setZThresh] = useState(3); // z-score (rolling)
   const [algo, setAlgo] = useState<"rolling" | "iforest">("rolling");
 
-  /** Data / UX */
+  /** Toggles */
+  const [showAnoms, setShowAnoms] = useState(false);
+  const [showForecast, setShowForecast] = useState(false);
+
+  /** Sources & metric names (kept local, simple fetches inline) */
   const [sources, setSources] = useState<Source[]>([]);
   const [metricOptions, setMetricOptions] = useState<string[]>([]);
-  const [rows, setRows] = useState<Row[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [autoLoaded, setAutoLoaded] = useState(false);
+  const safeSources = useMemo(() => (Array.isArray(sources) ? sources : []), [sources]);
 
-  /** Anomalies */
-  const [showAnoms, setShowAnoms] = useState(false);
-  const [anoms, setAnoms] = useState<AnomPoint[]>([]);
-  const [showForecast, setShowForecast] = useState(false);
-  const [forecast, setForecast] = useState<ForecastPoint[]>([]);
-
-  /** Load sources once */
-  useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch(`${API_BASE}/api/sources`);
-        const js: any = await r.json();
-        const arr: any[] = Array.isArray(js) ? js : js?.data ?? [];
-        const data: Source[] = arr.map((s: any) =>
-          typeof s === "string" ? { id: s, name: s } : { id: s.id ?? s.name, name: s.name ?? String(s) }
-        );
-        setSources(data);
-        if (data.length && !data.find((s) => s.name === sourceName)) {
-          setSourceName(data[0].name);
-        }
-      } catch (e: any) {
-        console.error("Failed to load sources", e);
-        setSources([]);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /** Load metric names whenever source changes */
-  useEffect(() => {
-    if (!sourceName) return;
-    (async () => {
-      try {
-        const qs = new URLSearchParams({ source_name: String(sourceName) });
-        const r = await fetch(`${API_BASE}/api/metrics/names?${qs.toString()}`);
-        if (!r.ok) throw await jsonErr(r);
-        const names: string[] = await r.json();
-        setMetricOptions(names);
-        if (names.length && !names.includes(metric)) setMetric(names[0]);
-      } catch {
-        setMetricOptions([]);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceName]);
-
-  /** Auto-load once when we have a valid sourceName */
-  useEffect(() => {
-    if (autoLoaded) return;
-    if (!sources.length) return;
-    if (!sources.find((s) => s.name === sourceName)) return;
-    setAutoLoaded(true);
-    load(); // initial load
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sources, sourceName, autoLoaded]);
-
-  /** Clear overlays whenever filters change */
-  useEffect(() => { setAnoms([]); setForecast([]); }, [sourceName, metric, start, end]);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
+  // Load sources once
+  useOnce(async () => {
     try {
-      if (start && end && start > end) throw new Error("Start date must be on or before End date.");
-      if (!sourceName) throw new Error("Please select a source.");
-      if (!metric) throw new Error("Please select a metric.");
-
-      const qs = new URLSearchParams();
-      qs.set("source_name", String(sourceName));
-      qs.set("metric", String(metric));
-      if (start) qs.set("start_date", start);
-      if (end) qs.set("end_date", end);
-      if (distinctField.trim()) qs.set("distinct_field", distinctField.trim());
-
-      const resp = await fetch(`${API_BASE}/api/metrics/daily?${qs.toString()}`);
-      if (!resp.ok) throw await jsonErr(resp);
-
-      const json = await resp.json();
-      const arr: Row[] = Array.isArray(json) ? json : json.items ?? json.data ?? [];
-      arr.sort((a, b) => (getDate(a) || "").localeCompare(getDate(b) || ""));
-      setRows(arr);
-
-      if (showAnoms && arr.length) {
-        await fetchAnomalies(sourceName, metric, start, end, windowN, zThresh, algo, setAnoms, setError);
-      } else {
-        setAnoms([]);
+      const r = await fetch(buildUrl("/api/sources"));
+      const js: any = await r.json();
+      const arr: any[] = Array.isArray(js) ? js : js?.data ?? [];
+      const data: Source[] = arr.map((s: any) =>
+        typeof s === "string" ? { id: s, name: s } : { id: s.id ?? s.name, name: s.name ?? String(s) }
+      );
+      setSources(data);
+      if (data.length && !data.find((s) => s.name === sourceName)) {
+        setSourceName(data[0].name);
       }
-
-      if (showForecast && arr.length) {
-        await fetchForecast(sourceName, metric, start, end, setForecast, setError);
-      } else {
-        setForecast([]);
-      }
-    } catch (e: any) {
-      setRows([]);
-      setAnoms([]);
-      setForecast([]);
-      setError(e?.message || "Failed to load data");
-    } finally {
-      setLoading(false);
+    } catch {
+      setSources([]);
     }
-  }
+  });
 
-  /** Re-fetch overlays on toggle/param changes */
-  useEffect(() => {
-    (async () => {
-      if (!showAnoms) return setAnoms([]);
-      if (!rows.length) return;
-      await fetchAnomalies(sourceName, metric, start, end, windowN, zThresh, algo, setAnoms, setError);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showAnoms]);
-
-  useEffect(() => {
-    (async () => {
-      if (!showForecast) return setForecast([]);
-      if (!rows.length) return;
-      await fetchForecast(sourceName, metric, start, end, setForecast, setError);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showForecast]);
-
-  useEffect(() => {
-    (async () => {
-      if (!showAnoms || !rows.length) return;
-      await fetchAnomalies(sourceName, metric, start, end, windowN, zThresh, algo, setAnoms, setError);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [windowN, zThresh, algo]);
-
-  useEffect(() => {
-    (async () => {
-      if (!showForecast || !rows.length) return;
-      await fetchForecast(sourceName, metric, start, end, setForecast, setError);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceName, metric, start, end]);
-
-  useEffect(() => {
-    const arr = Array.isArray(sources) ? sources : [];
-    if (!sourceName && arr.length > 0) {
-      setSourceName(arr[0].name);
+  // Load metric names whenever source changes
+  useWhen([sourceName], async () => {
+    if (!sourceName) return;
+    try {
+      const r = await fetch(buildUrl("/api/metrics/names", { source_name: String(sourceName) }));
+      if (!r.ok) throw new Error(String(r.status));
+      const names: string[] = await r.json();
+      setMetricOptions(names);
+      if (names.length && !names.includes(metric)) setMetric(names[0]);
+    } catch {
+      setMetricOptions([]);
     }
-  }, [sources, sourceName]);
+  });
 
+  /** === Hooks: data fetching === */
+  // NOTE: pass distinct_field through so your API can compute distinct tiles if supported
+  const {
+    data: rowsRaw,
+    loading: kpiLoading,
+    error: kpiError,
+  } = useMetricDaily({
+    source_name: sourceName,
+    metric,
+    start_date: start,
+    end_date: end,
+    // add this prop in your hook file if you haven't yet:
+    // distinct_field: distinctField || undefined,
+  } as any);
+
+  const rows: Row[] = useMemo(() => {
+    const arr = Array.isArray(rowsRaw) ? rowsRaw.slice() : [];
+    arr.sort((a: any, b: any) => (getDate(a) || "").localeCompare(getDate(b) || ""));
+    return arr as Row[];
+  }, [rowsRaw]);
+
+  const {
+    data: anomsRaw,
+    loading: anomsLoading,
+    error: anomsError,
+  } = useAnomalies(
+    {
+      source_name: sourceName,
+      metric,
+      start_date: start,
+      end_date: end,
+      window: algo === "rolling" ? windowN : undefined,
+      z_thresh: algo === "rolling" ? zThresh : undefined,
+      // if you implement iforest contamination on the server, you can add it there
+    },
+    showAnoms
+  );
+
+  const anomalies = useMemo(
+    () =>
+      (anomsRaw || []).map((p: any) => ({
+        date: String(p.metric_date ?? p.date ?? ""),
+        value: Number(p.value ?? 0),
+        z: typeof p.z === "number" ? p.z : undefined,
+      })),
+    [anomsRaw]
+  );
+
+  const {
+    data: forecastRaw,
+    loading: fcLoading,
+    error: fcError,
+  } = useForecast(
+    {
+      source_name: sourceName,
+      metric,
+      start_date: start,
+      end_date: end,
+    },
+    showForecast
+  );
+
+  const forecast = useMemo(
+    () =>
+      (forecastRaw || []).map((p: any) => ({
+        date: String(p.target_date ?? p.metric_date ?? p.date ?? ""),
+        yhat: Number(p.yhat ?? 0),
+      })),
+    [forecastRaw]
+  );
+
+  /** Export CSV */
+  const [exporting, setExporting] = useState(false);
   async function handleExportCSV() {
     if (!sourceName || !metric) return;
     setExporting(true);
     try {
-      const qs = new URLSearchParams();
-      qs.set("source_name", String(sourceName));
-      qs.set("metric", String(metric));
-      if (start) qs.set("start_date", start);
-      if (end) qs.set("end_date", end);
-
-      const resp = await fetch(`${API_BASE}/api/metrics/export/csv?${qs.toString()}`);
-      if (!resp.ok) throw await jsonErr(resp);
+      const url = buildUrl("/api/metrics/export/csv", {
+        source_name: String(sourceName),
+        metric: String(metric),
+        start_date: start,
+        end_date: end,
+      });
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
+      a.href = URL.createObjectURL(blob);
       a.download = `metric_daily_${metric}_${sourceName}_${start}_${end}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
     } catch (e: any) {
-      setError(e?.message || "Export failed");
+      console.error(e);
+      alert(e?.message || "Export failed");
     } finally {
       setExporting(false);
     }
   }
 
-  /** KPI aggregates for tiles */
+  /** KPI tiles (unchanged) */
   const kpis = useMemo(() => {
     let sum = 0, avg = 0, cnt = 0, dst = 0, n = 0;
     for (const r of rows) {
@@ -248,7 +202,8 @@ export default function MetricDailyCard() {
     };
   }, [rows]);
 
-  const safeSources = useMemo(() => (Array.isArray(sources) ? sources : []), [sources]);
+  const anyLoading = kpiLoading || anomsLoading || fcLoading;
+  const error = kpiError?.message || anomsError?.message || fcError?.message || null;
 
   /** UI */
   return (
@@ -330,8 +285,9 @@ export default function MetricDailyCard() {
           </select>
         </Labeled>
 
-        <button onClick={load} disabled={loading} className="sd-btn">
-          {loading ? "Loading…" : "Apply"}
+        {/* Apply is no longer needed to fetch; hooks react to filters. You can keep for UX parity */}
+        <button onClick={() => { /* no-op; hooks already react */ }} disabled={anyLoading} className="sd-btn">
+          {anyLoading ? "Loading…" : "Apply"}
         </button>
 
         <button
@@ -343,16 +299,14 @@ export default function MetricDailyCard() {
             setWindowN(7);
             setZThresh(3);
             setAlgo("rolling");
-            setError(null);
-            setAnoms([]);
           }}
-          disabled={loading}
+          disabled={anyLoading}
           className="sd-btn ghost"
         >
           Reset
         </button>
 
-        <button onClick={handleExportCSV} disabled={loading || exporting || !metric || !sourceName} className="sd-btn">
+        <button onClick={handleExportCSV} disabled={anyLoading || exporting || !metric || !sourceName} className="sd-btn">
           {exporting ? "Exporting…" : "Export CSV"}
         </button>
 
@@ -362,15 +316,8 @@ export default function MetricDailyCard() {
             aria-label="Show anomalies"
             data-testid="toggle-anomalies"
             checked={showAnoms}
-            onChange={(e) => {
-              setShowAnoms(e.target.checked);
-              if (e.target.checked && rows.length) {
-                fetchAnomalies(sourceName, metric, start, end, windowN, zThresh, algo, setAnoms, setError);
-              } else {
-                setAnoms([]);
-              }
-            }}
-            disabled={loading || rows.length === 0}
+            onChange={(e) => setShowAnoms(e.target.checked)}
+            disabled={anyLoading || rows.length === 0}
           />
           Show anomalies
         </label>
@@ -382,7 +329,7 @@ export default function MetricDailyCard() {
             data-testid="toggle-forecast"
             checked={showForecast}
             onChange={(e) => setShowForecast(e.target.checked)}
-            disabled={loading || rows.length === 0}
+            disabled={anyLoading || rows.length === 0}
           />
           Show forecast
         </label>
@@ -434,7 +381,7 @@ export default function MetricDailyCard() {
                 </tr>
               );
             })}
-            {rows.length === 0 && !loading && (
+            {rows.length === 0 && !anyLoading && (
               <tr>
                 <td style={thTd()} colSpan={7}>
                   No data for this selection. Try a wider date range or different filters.
@@ -447,14 +394,14 @@ export default function MetricDailyCard() {
 
       {/* Chart */}
       {rows.length > 0 && (
-        <div className="sd-my-4" aria-busy={loading}>
+        <div className="sd-my-4" aria-busy={anyLoading}>
           <MetricDailyChart
             key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}`}
             rows={rows.map((r) => ({
               date: getDate(r) || "",
               value: num(pick(r, "value_sum", "sum", "total", "value")),
             }))}
-            anomalies={anoms}
+            anomalies={anomalies}
             forecast={forecast}
           />
         </div>
@@ -463,7 +410,16 @@ export default function MetricDailyCard() {
   );
 }
 
-/* ---------- helpers ---------- */
+/* ---------- tiny effect helpers to avoid boilerplate ---------- */
+import { useEffect } from "react";
+function useOnce(fn: () => void | Promise<void>) {
+  useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+}
+function useWhen(deps: any[], fn: () => void | Promise<void>) {
+  useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, deps);
+}
+
+/* ---------- local helpers (unchanged) ---------- */
 function pick<T extends object, K extends keyof any>(o: T, ...ks: K[]) {
   for (const k of ks) {
     const v = (o as any)[k];
@@ -489,14 +445,6 @@ function isoDaysAgo(n: number) {
   d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
 }
-async function jsonErr(r: Response) {
-  try {
-    const j = await r.json();
-    return new Error(String(j?.detail || j?.title || `HTTP ${r.status}`));
-  } catch {
-    return new Error(`HTTP ${r.status}`);
-  }
-}
 function thTd(header = false): React.CSSProperties {
   return {
     border: "1px solid #2a2a2a",
@@ -513,123 +461,4 @@ function Labeled(props: React.PropsWithChildren<{ label: string; style?: React.C
       {props.children}
     </div>
   );
-}
-
-/** Param-aware anomaly fetch (rolling z-score / isolation forest) */
-async function fetchAnomalies(
-  sourceName: string,
-  metric: string,
-  start: string | undefined,
-  end: string | undefined,
-  windowN: number,
-  zThresh: number,
-  algo: "rolling" | "iforest",
-  setAnoms: (v: AnomPoint[]) => void,
-  setError: (v: string | null) => void
-) {
-  try {
-    const qs = new URLSearchParams({
-      source_name: String(sourceName),
-      metric: String(metric),
-    });
-    if (start) qs.set("start_date", start);
-    if (end) qs.set("end_date", end);
-
-    let url: string;
-    if (algo === "rolling") {
-      qs.set("window", String(windowN));
-      qs.set("z_thresh", String(zThresh));
-      url = `${API_BASE}/api/metrics/anomaly/rolling?${qs.toString()}`;
-    } else {
-      qs.set("contamination", "0.15");
-      url = `${API_BASE}/api/metrics/anomaly/iforest?${qs.toString()}`;
-    }
-
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    const js: any = await r.json();
-
-    const raw: any[] =
-      Array.isArray(js) ? js :
-      Array.isArray(js?.data) ? js.data :
-      Array.isArray(js?.points) ? js.points :
-      Array.isArray(js?.data?.points) ? js.data.points :
-      Array.isArray(js?.results) ? js.results :
-      [];
-
-    const normalized: AnomPoint[] = raw
-      .map((row: any) => {
-        const z =
-          typeof row.z === "number"
-            ? row.z
-            : typeof row.score === "number"
-            ? row.score
-            : undefined;
-
-        const flagged =
-          row.is_outlier === true ||
-          row.is_anomaly === true ||
-          row.outlier === true ||
-          row.anomaly === true;
-
-        return {
-          date: String(row.metric_date ?? row.date ?? row.ts ?? ""),
-          value: Number(row.value ?? row.value_sum ?? row.y ?? row.count ?? 0),
-          z,
-          flagged,
-        } as any;
-      })
-      .filter((r) => r.date && (r.flagged || (typeof r.z === "number" && Math.abs(r.z) >= zThresh)))
-      .map(({ date, value, z }) => ({ date, value, z }));
-
-    setAnoms(normalized);
-  } catch (e: any) {
-    console.error("fetchAnomalies failed:", e);
-    setAnoms([]);
-    setError(e?.message || "Failed to load anomalies");
-  }
-}
-
-async function fetchForecast(
-  sourceName: string,
-  metric: string,
-  start: string | undefined,
-  end: string | undefined,
-  setForecast: (v: ForecastPoint[]) => void,
-  setError: (v: string | null) => void
-) {
-  try {
-    const key = `fc:${sourceName}:${metric}:${start}:${end}`;
-    if (FC_CACHE.has(key)) { setForecast(FC_CACHE.get(key)!); return; }
-
-    const qs = new URLSearchParams();
-    qs.set("source_name", String(sourceName));
-    qs.set("metric", String(metric));
-    if (start) qs.set("start_date", start);
-    if (end) qs.set("end_date", end);
-
-    const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`);
-    if (!r.ok) throw await jsonErr(r);
-    const js: any = await r.json();
-
-    const raw: any[] =
-      Array.isArray(js) ? js :
-      Array.isArray(js?.data) ? js.data :
-      Array.isArray(js?.points) ? js.points :
-      Array.isArray(js?.data?.points) ? js.data.points :
-      [];
-
-    const mapped: ForecastPoint[] = raw
-      .map((row: any) => ({
-        date: String(row.metric_date ?? row.date ?? row.ts ?? ""),
-        yhat: Number(row.yhat ?? row.y_pred ?? row.prediction ?? row.value ?? row.y ?? 0),
-      }))
-      .filter(p => p.date && Number.isFinite(p.yhat));
-
-    FC_CACHE.set(key, mapped);
-    setForecast(mapped);
-  } catch (e: any) {
-    setForecast([]);
-    setError(e?.message || "Failed to load forecast");
-  }
 }
