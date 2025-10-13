@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import MetricDailyChart from "./MetricDailyChart";
 import { Card, Stack, Tile, Text } from "../ui";
 
@@ -7,12 +7,11 @@ import { useMetricDaily } from "../hooks/useMetricDaily";
 import { useAnomalies } from "../hooks/useAnomalies";
 import { useForecast } from "../hooks/useForecast";
 
+import MetricDailyView from "./MetricDailyView";
+
 /**
- * KPI card with filters, CSV export, and configurable anomaly/forecast overlays.
- * Now uses hooks:
- *  - useMetricDaily -> /api/metrics/daily
- *  - useAnomalies   -> /api/metrics/anomaly/rolling (or iforest)
- *  - useForecast    -> /api/forecast/daily
+ * KPI card (container) with filters, CSV export, and configurable anomaly/forecast overlays.
+ * Data fetching is done here; presentational layout is delegated to MetricDailyView.
  */
 
 type Row = {
@@ -84,7 +83,6 @@ export default function MetricDailyCard() {
   });
 
   /** === Hooks: data fetching === */
-  // NOTE: pass distinct_field through so your API can compute distinct tiles if supported
   const {
     data: rowsRaw,
     loading: kpiLoading,
@@ -94,8 +92,7 @@ export default function MetricDailyCard() {
     metric,
     start_date: start,
     end_date: end,
-    // add this prop in your hook file if you haven't yet:
-    // distinct_field: distinctField || undefined,
+    // distinct_field: distinctField || undefined, // enable if your API supports it
   } as any);
 
   const rows: Row[] = useMemo(() => {
@@ -116,7 +113,6 @@ export default function MetricDailyCard() {
       end_date: end,
       window: algo === "rolling" ? windowN : undefined,
       z_thresh: algo === "rolling" ? zThresh : undefined,
-      // if you implement iforest contamination on the server, you can add it there
     },
     showAnoms
   );
@@ -205,213 +201,242 @@ export default function MetricDailyCard() {
   const anyLoading = kpiLoading || anomsLoading || fcLoading;
   const error = kpiError?.message || anomsError?.message || fcError?.message || null;
 
-  /** UI */
+  /** ---------- Presentational slots ---------- */
+
+  // 1) Filters (Figma: first)
+  const FiltersSection = (
+    <Stack
+      direction="row"
+      className="sd-my-2"
+      style={{ flexWrap: "wrap", alignItems: "end" }}
+      data-testid="filters-bar"
+    >
+      <Labeled label="Source">
+        <select
+          value={sourceName || ""}
+          onChange={(e) => setSourceName(e.target.value)}
+          aria-label="Source"
+        >
+          {safeSources.length === 0 ? (
+            <option value="" disabled>(no sources yet)</option>
+          ) : (
+            safeSources.map((s: any) => (
+              <option key={s.id ?? s.name} value={s.name}>{s.name}</option>
+            ))
+          )}
+        </select>
+      </Labeled>
+
+      <Labeled label="Metric">
+        {metricOptions.length ? (
+          <select value={metric} onChange={(e) => setMetric(e.target.value)}>
+            {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        ) : (
+          <>
+            <input list="metric-suggestions" value={metric} onChange={(e) => setMetric(e.target.value)} />
+            <datalist id="metric-suggestions">
+              {METRIC_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
+            </datalist>
+          </>
+        )}
+      </Labeled>
+
+      <Labeled label="Start">
+        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+      </Labeled>
+
+      <Labeled label="End">
+        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+      </Labeled>
+
+      <Labeled label="Distinct Field (optional)" style={{ minWidth: 180 }}>
+        <input placeholder="id / user_id …" value={distinctField} onChange={(e) => setDistinctField(e.target.value)} />
+      </Labeled>
+
+      {/* Anomaly Params */}
+      <Labeled label="Anomaly window">
+        <input
+          type="number"
+          min={3}
+          max={60}
+          value={windowN}
+          onChange={(e) => setWindowN(Math.max(3, Math.min(60, Number(e.target.value) || 7)))}
+        />
+      </Labeled>
+
+      <Labeled label="Z threshold">
+        <input
+          type="number"
+          step="0.1"
+          min={1}
+          max={6}
+          value={zThresh}
+          onChange={(e) => setZThresh(Math.max(1, Math.min(6, Number(e.target.value) || 3)))}
+          disabled={algo === "iforest"}
+        />
+      </Labeled>
+
+      <Labeled label="Algorithm">
+        <select value={algo} onChange={(e) => setAlgo(e.target.value as "rolling" | "iforest")}>
+          <option value="rolling">Rolling Z-score</option>
+          <option value="iforest">Isolation Forest</option>
+        </select>
+      </Labeled>
+
+      {/* Apply is no longer needed; hooks react to filters. Kept for UX parity */}
+      <button onClick={() => { /* no-op; hooks already react */ }} disabled={anyLoading} className="sd-btn" aria-label="Apply filters">
+        {anyLoading ? "Loading…" : "Apply"}
+      </button>
+
+      <button
+        onClick={resetAll}
+        disabled={anyLoading}
+        className="sd-btn ghost"
+        aria-label="Reset filters"
+      >
+        Reset
+      </button>
+
+      <button
+        onClick={handleExportCSV}
+        disabled={anyLoading || exporting || !metric || !sourceName}
+        className="sd-btn"
+        aria-label="Export CSV"
+      >
+        {exporting ? "Exporting…" : "Export CSV"}
+      </button>
+
+      <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input
+          type="checkbox"
+          aria-label="Show anomalies"
+          data-testid="toggle-anomalies"
+          checked={showAnoms}
+          onChange={(e) => setShowAnoms(e.target.checked)}
+          disabled={anyLoading || rows.length === 0}
+        />
+        Show anomalies
+      </label>
+
+      <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input
+          type="checkbox"
+          aria-label="Show forecast"
+          data-testid="toggle-forecast"
+          checked={showForecast}
+          onChange={(e) => setShowForecast(e.target.checked)}
+          disabled={anyLoading || rows.length === 0}
+        />
+        Show forecast
+      </label>
+    </Stack>
+  );
+
+  // 2) Tiles (Figma: second)
+  const TilesSection = (
+    <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap" }} data-testid="kpi-tiles">
+      <Tile title="Sum"><Text variant="h3">{fmtNum(kpis.sum)}</Text></Tile>
+      <Tile title="Average"><Text variant="h3">{fmtNum(kpis.avg)}</Text></Tile>
+      <Tile title="Count"><Text variant="h3">{fmtNum(kpis.count)}</Text></Tile>
+      <Tile title="Distinct"><Text variant="h3">{kpis.hasDistinct ? fmtNum(kpis.distinct) : "—"}</Text></Tile>
+    </Stack>
+  );
+
+  // 3) Table (Figma: third)
+  const TableSection = (
+    <div className="sd-border" style={{ borderRadius: 10, overflow: "hidden" }} data-testid="metric-table">
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <thead>
+          <tr>
+            {["Date", "Source", "Metric", "Sum", "Avg", "Count", "Distinct"].map((h) => (
+              <th key={h} style={thTd(true)}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const date = getDate(r);
+            const src = pick(r, "source_id", "source");
+            const met = pick(r, "metric", "name");
+            const vSum = pick(r, "value_sum", "sum", "total", "value");
+            const vAvg = pick(r, "value_avg", "avg", "mean", "average");
+            const vCnt = pick(r, "value_count", "count", "rows", "n");
+            const vDst = pick(r, "value_distinct", "distinct", "unique");
+            return (
+              <tr key={`${date}-${i}`}>
+                <td style={thTd()}>{fmt(date)}</td>
+                <td style={thTd()}>{fmt(src)}</td>
+                <td style={thTd()}>{fmt(met)}</td>
+                <td style={thTd()}>{fmt(vSum)}</td>
+                <td style={thTd()}>{fmt(vAvg)}</td>
+                <td style={thTd()}>{fmt(vCnt)}</td>
+                <td style={thTd()}>{fmt(vDst)}</td>
+              </tr>
+            );
+          })}
+          {rows.length === 0 && !anyLoading && (
+            <tr>
+              <td style={thTd()} colSpan={7}>
+                No data for this selection. Try a wider date range or different filters.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  // 4) Chart (Figma: fourth)
+  const ChartSection = rows.length > 0 ? (
+    <div className="sd-my-4" aria-busy={anyLoading} data-testid="metric-chart">
+      <MetricDailyChart
+        key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}`}
+        rows={rows.map((r) => ({
+          date: getDate(r) || "",
+          value: num(pick(r, "value_sum", "sum", "total", "value")),
+        }))}
+        anomalies={anomalies}
+        forecast={forecast}
+      />
+    </div>
+  ) : (
+    <div className="sd-my-4" />
+  );
+
+  /** UI (presentational handled by MetricDailyView) */
   return (
     <Card elevation={1} className="sd-my-4">
       <Tile title={`Daily KPIs (${metric})`} />
 
-      {/* Filters row */}
-      <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap", alignItems: "end" }}>
-        <Labeled label="Source">
-          <select
-            value={sourceName || ""}
-            onChange={(e) => setSourceName(e.target.value)}
-            aria-label="Source"
-          >
-            {safeSources.length === 0 ? (
-              <option value="" disabled>(no sources yet)</option>
-            ) : (
-              safeSources.map((s: any) => (
-                <option key={s.id ?? s.name} value={s.name}>{s.name}</option>
-              ))
-            )}
-          </select>
-        </Labeled>
-
-        <Labeled label="Metric">
-          {metricOptions.length ? (
-            <select value={metric} onChange={(e) => setMetric(e.target.value)}>
-              {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          ) : (
-            <>
-              <input list="metric-suggestions" value={metric} onChange={(e) => setMetric(e.target.value)} />
-              <datalist id="metric-suggestions">
-                {METRIC_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
-              </datalist>
-            </>
-          )}
-        </Labeled>
-
-        <Labeled label="Start">
-          <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-        </Labeled>
-
-        <Labeled label="End">
-          <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
-        </Labeled>
-
-        <Labeled label="Distinct Field (optional)" style={{ minWidth: 180 }}>
-          <input placeholder="id / user_id …" value={distinctField} onChange={(e) => setDistinctField(e.target.value)} />
-        </Labeled>
-
-        {/* Anomaly Params */}
-        <Labeled label="Anomaly window">
-          <input
-            type="number"
-            min={3}
-            max={60}
-            value={windowN}
-            onChange={(e) => setWindowN(Math.max(3, Math.min(60, Number(e.target.value) || 7)))}
-          />
-        </Labeled>
-
-        <Labeled label="Z threshold">
-          <input
-            type="number"
-            step="0.1"
-            min={1}
-            max={6}
-            value={zThresh}
-            onChange={(e) => setZThresh(Math.max(1, Math.min(6, Number(e.target.value) || 3)))}
-            disabled={algo === "iforest"}
-          />
-        </Labeled>
-
-        <Labeled label="Algorithm">
-          <select value={algo} onChange={(e) => setAlgo(e.target.value as "rolling" | "iforest")}>
-            <option value="rolling">Rolling Z-score</option>
-            <option value="iforest">Isolation Forest</option>
-          </select>
-        </Labeled>
-
-        {/* Apply is no longer needed to fetch; hooks react to filters. You can keep for UX parity */}
-        <button onClick={() => { /* no-op; hooks already react */ }} disabled={anyLoading} className="sd-btn">
-          {anyLoading ? "Loading…" : "Apply"}
-        </button>
-
-        <button
-          onClick={() => {
-            setMetric(metricOptions[0] ?? "events_total");
-            setStart(isoDaysAgo(6));
-            setEnd(isoDaysAgo(0));
-            setDistinctField("");
-            setWindowN(7);
-            setZThresh(3);
-            setAlgo("rolling");
-          }}
-          disabled={anyLoading}
-          className="sd-btn ghost"
-        >
-          Reset
-        </button>
-
-        <button onClick={handleExportCSV} disabled={anyLoading || exporting || !metric || !sourceName} className="sd-btn">
-          {exporting ? "Exporting…" : "Export CSV"}
-        </button>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            aria-label="Show anomalies"
-            data-testid="toggle-anomalies"
-            checked={showAnoms}
-            onChange={(e) => setShowAnoms(e.target.checked)}
-            disabled={anyLoading || rows.length === 0}
-          />
-          Show anomalies
-        </label>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            aria-label="Show forecast"
-            data-testid="toggle-forecast"
-            checked={showForecast}
-            onChange={(e) => setShowForecast(e.target.checked)}
-            disabled={anyLoading || rows.length === 0}
-          />
-          Show forecast
-        </label>
-      </Stack>
-
-      {/* Error banner */}
-      {error && (
-        <Text className="sd-my-2" variant="small" muted>
-          ⚠️ {error}
-        </Text>
-      )}
-
-      {/* KPI tiles */}
-      <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap" }}>
-        <Tile title="Sum"><Text variant="h3">{fmtNum(kpis.sum)}</Text></Tile>
-        <Tile title="Average"><Text variant="h3">{fmtNum(kpis.avg)}</Text></Tile>
-        <Tile title="Count"><Text variant="h3">{fmtNum(kpis.count)}</Text></Tile>
-        <Tile title="Distinct"><Text variant="h3">{kpis.hasDistinct ? fmtNum(kpis.distinct) : "—"}</Text></Tile>
-      </Stack>
-
-      {/* Table */}
-      <div className="sd-border" style={{ borderRadius: 10, overflow: "hidden" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr>
-              {["Date", "Source", "Metric", "Sum", "Avg", "Count", "Distinct"].map((h) => (
-                <th key={h} style={thTd(true)}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => {
-              const date = getDate(r);
-              const src = pick(r, "source_id", "source");
-              const met = pick(r, "metric", "name");
-              const vSum = pick(r, "value_sum", "sum", "total", "value");
-              const vAvg = pick(r, "value_avg", "avg", "mean", "average");
-              const vCnt = pick(r, "value_count", "count", "rows", "n");
-              const vDst = pick(r, "value_distinct", "distinct", "unique");
-              return (
-                <tr key={`${date}-${i}`}>
-                  <td style={thTd()}>{fmt(date)}</td>
-                  <td style={thTd()}>{fmt(src)}</td>
-                  <td style={thTd()}>{fmt(met)}</td>
-                  <td style={thTd()}>{fmt(vSum)}</td>
-                  <td style={thTd()}>{fmt(vAvg)}</td>
-                  <td style={thTd()}>{fmt(vCnt)}</td>
-                  <td style={thTd()}>{fmt(vDst)}</td>
-                </tr>
-              );
-            })}
-            {rows.length === 0 && !anyLoading && (
-              <tr>
-                <td style={thTd()} colSpan={7}>
-                  No data for this selection. Try a wider date range or different filters.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Chart */}
-      {rows.length > 0 && (
-        <div className="sd-my-4" aria-busy={anyLoading}>
-          <MetricDailyChart
-            key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}`}
-            rows={rows.map((r) => ({
-              date: getDate(r) || "",
-              value: num(pick(r, "value_sum", "sum", "total", "value")),
-            }))}
-            anomalies={anomalies}
-            forecast={forecast}
-          />
-        </div>
-      )}
+      <MetricDailyView
+        filters={FiltersSection}
+        tiles={TilesSection}
+        table={TableSection}
+        chart={ChartSection}
+        isLoading={anyLoading}
+        error={error}
+        // onRefresh: optional; hooks auto-refresh on param change
+        onReset={resetAll}
+      />
     </Card>
   );
+
+  /** helpers */
+  function resetAll() {
+    setMetric(metricOptions[0] ?? "events_total");
+    setStart(isoDaysAgo(6));
+    setEnd(isoDaysAgo(0));
+    setDistinctField("");
+    setWindowN(7);
+    setZThresh(3);
+    setAlgo("rolling");
+    setShowAnoms(false);
+    setShowForecast(false);
+  }
 }
 
 /* ---------- tiny effect helpers to avoid boilerplate ---------- */
-import { useEffect } from "react";
 function useOnce(fn: () => void | Promise<void>) {
   useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 }
