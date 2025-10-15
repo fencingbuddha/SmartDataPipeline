@@ -1,18 +1,11 @@
 import { useMemo, useState, useEffect } from "react";
 import MetricDailyChart from "./MetricDailyChart";
 import { Card, Stack, Tile, Text } from "../ui";
-
 import { buildUrl } from "../lib/api";
 import { useMetricDaily } from "../hooks/useMetricDaily";
 import { useAnomalies } from "../hooks/useAnomalies";
 import { useForecast } from "../hooks/useForecast";
-
 import MetricDailyView from "./MetricDailyView";
-
-/**
- * KPI card (container) with filters, CSV export, and configurable anomaly/forecast overlays.
- * Data fetching is done here; presentational layout is delegated to MetricDailyView.
- */
 
 type Row = {
   metric_date?: string; date?: string; day?: string;
@@ -29,28 +22,30 @@ type Source = { id: number | string; name: string };
 const METRIC_SUGGESTIONS = ["events_total", "errors_total", "revenue", "signups", "sessions"];
 
 export default function MetricDailyCard() {
-  /** Filters */
+  // Filters
   const [sourceName, setSourceName] = useState("demo-source");
   const [metric, setMetric] = useState("events_total");
   const [start, setStart] = useState(() => isoDaysAgo(6));
   const [end, setEnd] = useState(() => isoDaysAgo(0));
   const [distinctField, setDistinctField] = useState("");
 
-  /** Anomaly params */
-  const [windowN, setWindowN] = useState(7); // days (rolling)
-  const [zThresh, setZThresh] = useState(3); // z-score (rolling)
+  // Anomaly params
+  const [windowN, setWindowN] = useState(7);
+  const [zThresh, setZThresh] = useState(3);
   const [algo, setAlgo] = useState<"rolling" | "iforest">("rolling");
 
-  /** Toggles */
+  // Toggles
   const [showAnoms, setShowAnoms] = useState(false);
   const [showForecast, setShowForecast] = useState(false);
 
-  /** Sources & metric names (kept local, simple fetches inline) */
+  // “Run” button trigger (ensures hooks re-fetch even if values didn’t change)
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // Sources / metric names
   const [sources, setSources] = useState<Source[]>([]);
   const [metricOptions, setMetricOptions] = useState<string[]>([]);
   const safeSources = useMemo(() => (Array.isArray(sources) ? sources : []), [sources]);
 
-  // Load sources once
   useOnce(async () => {
     try {
       const r = await fetch(buildUrl("/api/sources"));
@@ -60,15 +55,12 @@ export default function MetricDailyCard() {
         typeof s === "string" ? { id: s, name: s } : { id: s.id ?? s.name, name: s.name ?? String(s) }
       );
       setSources(data);
-      if (data.length && !data.find((s) => s.name === sourceName)) {
-        setSourceName(data[0].name);
-      }
+      if (data.length && !data.find((s) => s.name === sourceName)) setSourceName(data[0].name);
     } catch {
       setSources([]);
     }
   });
 
-  // Load metric names whenever source changes
   useWhen([sourceName], async () => {
     if (!sourceName) return;
     try {
@@ -82,17 +74,14 @@ export default function MetricDailyCard() {
     }
   });
 
-  /** === Hooks: data fetching === */
-  const {
-    data: rowsRaw,
-    loading: kpiLoading,
-    error: kpiError,
-  } = useMetricDaily({
+  // --- Data hooks ---
+  const { data: rowsRaw, loading: kpiLoading, error: kpiError } = useMetricDaily({
     source_name: sourceName,
     metric,
     start_date: start,
     end_date: end,
-    // distinct_field: distinctField || undefined, // enable if your API supports it
+    refresh: refreshTick, // ensures refetch on Run
+    // distinct_field: distinctField || undefined,
   } as any);
 
   const rows: Row[] = useMemo(() => {
@@ -101,11 +90,7 @@ export default function MetricDailyCard() {
     return arr as Row[];
   }, [rowsRaw]);
 
-  const {
-    data: anomsRaw,
-    loading: anomsLoading,
-    error: anomsError,
-  } = useAnomalies(
+  const { data: anomsRaw, loading: anomsLoading, error: anomsError } = useAnomalies(
     {
       source_name: sourceName,
       metric,
@@ -127,11 +112,7 @@ export default function MetricDailyCard() {
     [anomsRaw]
   );
 
-  const {
-    data: forecastRaw,
-    loading: fcLoading,
-    error: fcError,
-  } = useForecast(
+  const { data: forecastRaw, loading: fcLoading, error: fcError } = useForecast(
     {
       source_name: sourceName,
       metric,
@@ -150,7 +131,7 @@ export default function MetricDailyCard() {
     [forecastRaw]
   );
 
-  /** Export CSV */
+  // Export CSV
   const [exporting, setExporting] = useState(false);
   async function handleExportCSV() {
     if (!sourceName || !metric) return;
@@ -179,7 +160,7 @@ export default function MetricDailyCard() {
     }
   }
 
-  /** KPI tiles (unchanged) */
+  // KPIs
   const kpis = useMemo(() => {
     let sum = 0, avg = 0, cnt = 0, dst = 0, n = 0;
     for (const r of rows) {
@@ -201,22 +182,11 @@ export default function MetricDailyCard() {
   const anyLoading = kpiLoading || anomsLoading || fcLoading;
   const error = kpiError?.message || anomsError?.message || fcError?.message || null;
 
-  /** ---------- Presentational slots ---------- */
-
-  // 1) Filters (Figma: first)
+  // --- UI sections ---
   const FiltersSection = (
-    <Stack
-      direction="row"
-      className="sd-my-2"
-      style={{ flexWrap: "wrap", alignItems: "end" }}
-      data-testid="filters-bar"
-    >
+    <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap", alignItems: "end" }} data-testid="filters-bar">
       <Labeled label="Source">
-        <select
-          value={sourceName || ""}
-          onChange={(e) => setSourceName(e.target.value)}
-          aria-label="Source"
-        >
+        <select value={sourceName || ""} onChange={(e) => setSourceName(e.target.value)} aria-label="Source">
           {safeSources.length === 0 ? (
             <option value="" disabled>(no sources yet)</option>
           ) : (
@@ -243,38 +213,25 @@ export default function MetricDailyCard() {
       </Labeled>
 
       <Labeled label="Start">
-        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} data-testid="filter-start" />
       </Labeled>
 
       <Labeled label="End">
-        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} data-testid="filter-end" />
       </Labeled>
 
       <Labeled label="Distinct Field (optional)" style={{ minWidth: 180 }}>
         <input placeholder="id / user_id …" value={distinctField} onChange={(e) => setDistinctField(e.target.value)} />
       </Labeled>
 
-      {/* Anomaly Params */}
       <Labeled label="Anomaly window">
-        <input
-          type="number"
-          min={3}
-          max={60}
-          value={windowN}
-          onChange={(e) => setWindowN(Math.max(3, Math.min(60, Number(e.target.value) || 7)))}
-        />
+        <input type="number" min={3} max={60} value={windowN}
+          onChange={(e) => setWindowN(Math.max(3, Math.min(60, Number(e.target.value) || 7)))} />
       </Labeled>
 
       <Labeled label="Z threshold">
-        <input
-          type="number"
-          step="0.1"
-          min={1}
-          max={6}
-          value={zThresh}
-          onChange={(e) => setZThresh(Math.max(1, Math.min(6, Number(e.target.value) || 3)))}
-          disabled={algo === "iforest"}
-        />
+        <input type="number" step="0.1" min={1} max={6} value={zThresh}
+          onChange={(e) => setZThresh(Math.max(1, Math.min(6, Number(e.target.value) || 3)))} disabled={algo === "iforest"} />
       </Labeled>
 
       <Labeled label="Algorithm">
@@ -284,34 +241,25 @@ export default function MetricDailyCard() {
         </select>
       </Labeled>
 
-      {/* Apply is no longer needed; hooks react to filters. Kept for UX parity */}
-      <button onClick={() => { /* no-op; hooks already react */ }} disabled={anyLoading} className="sd-btn" aria-label="Apply filters">
-        {anyLoading ? "Loading…" : "Apply"}
-      </button>
-
       <button
-        onClick={resetAll}
+        data-testid="btn-run"
+        onClick={() => setRefreshTick((t) => t + 1)}
         disabled={anyLoading}
-        className="sd-btn ghost"
-        aria-label="Reset filters"
+        className="sd-btn"
       >
-        Reset
+        Run
       </button>
 
-      <button
-        onClick={handleExportCSV}
-        disabled={anyLoading || exporting || !metric || !sourceName}
-        className="sd-btn"
-        aria-label="Export CSV"
-      >
+      <button onClick={resetAll} disabled={anyLoading} className="sd-btn ghost">Reset</button>
+
+      <button onClick={handleExportCSV} disabled={anyLoading || exporting || !metric || !sourceName} className="sd-btn">
         {exporting ? "Exporting…" : "Export CSV"}
       </button>
 
       <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <input
           type="checkbox"
-          aria-label="Show anomalies"
-          data-testid="toggle-anomalies"
+          data-testid="toggle-anoms"
           checked={showAnoms}
           onChange={(e) => setShowAnoms(e.target.checked)}
           disabled={anyLoading || rows.length === 0}
@@ -322,7 +270,6 @@ export default function MetricDailyCard() {
       <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <input
           type="checkbox"
-          aria-label="Show forecast"
           data-testid="toggle-forecast"
           checked={showForecast}
           onChange={(e) => setShowForecast(e.target.checked)}
@@ -333,7 +280,6 @@ export default function MetricDailyCard() {
     </Stack>
   );
 
-  // 2) Tiles (Figma: second)
   const TilesSection = (
     <Stack direction="row" className="sd-my-2" style={{ flexWrap: "wrap" }} data-testid="kpi-tiles">
       <Tile title="Sum"><Text variant="h3">{fmtNum(kpis.sum)}</Text></Tile>
@@ -343,7 +289,6 @@ export default function MetricDailyCard() {
     </Stack>
   );
 
-  // 3) Table (Figma: third)
   const TableSection = (
     <div className="sd-border" style={{ borderRadius: 10, overflow: "hidden" }} data-testid="metric-table">
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
@@ -376,39 +321,36 @@ export default function MetricDailyCard() {
             );
           })}
           {rows.length === 0 && !anyLoading && (
-            <tr>
-              <td style={thTd()} colSpan={7}>
-                No data for this selection. Try a wider date range or different filters.
-              </td>
-            </tr>
+            <tr><td style={thTd()} colSpan={7}>No data for this selection.</td></tr>
           )}
         </tbody>
       </table>
     </div>
   );
 
-  // 4) Chart (Figma: fourth)
+  const forecastMapped = (forecast ?? []).map((f: any) => ({
+    date: f.date ?? f.target_date,
+    yhat: Number(f.yhat),
+  }));
+  const forecastForChart = showForecast ? forecastMapped : [];
+
   const ChartSection = rows.length > 0 ? (
-    <div className="sd-my-4" aria-busy={anyLoading} data-testid="metric-chart">
+    <div className="sd-my-4" aria-busy={anyLoading} style={{ position: "relative" }}>
       <MetricDailyChart
-        key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}`}
+        key={`${sourceName}-${metric}-${showAnoms ? "A" : "N"}-${showForecast ? "F" : "NF"}-${refreshTick}`}
         rows={rows.map((r) => ({
           date: getDate(r) || "",
           value: num(pick(r, "value_sum", "sum", "total", "value")),
         }))}
         anomalies={anomalies}
-        forecast={forecast}
+        forecast={forecastForChart}
       />
     </div>
-  ) : (
-    <div className="sd-my-4" />
-  );
+  ) : null;
 
-  /** UI (presentational handled by MetricDailyView) */
   return (
     <Card elevation={1} className="sd-my-4">
       <Tile title={`Daily KPIs (${metric})`} />
-
       <MetricDailyView
         filters={FiltersSection}
         tiles={TilesSection}
@@ -416,13 +358,11 @@ export default function MetricDailyCard() {
         chart={ChartSection}
         isLoading={anyLoading}
         error={error}
-        // onRefresh: optional; hooks auto-refresh on param change
         onReset={resetAll}
       />
     </Card>
   );
 
-  /** helpers */
   function resetAll() {
     setMetric(metricOptions[0] ?? "events_total");
     setStart(isoDaysAgo(6));
@@ -433,52 +373,31 @@ export default function MetricDailyCard() {
     setAlgo("rolling");
     setShowAnoms(false);
     setShowForecast(false);
+    setRefreshTick((t) => t + 1);
   }
 }
 
-/* ---------- tiny effect helpers to avoid boilerplate ---------- */
+// --- tiny helpers ---
 function useOnce(fn: () => void | Promise<void>) {
   useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 }
 function useWhen(deps: any[], fn: () => void | Promise<void>) {
   useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, deps);
 }
-
-/* ---------- local helpers (unchanged) ---------- */
 function pick<T extends object, K extends keyof any>(o: T, ...ks: K[]) {
-  for (const k of ks) {
-    const v = (o as any)[k];
-    if (v !== undefined && v !== null) return v;
-  }
+  for (const k of ks) { const v = (o as any)[k]; if (v !== undefined && v !== null) return v; }
   return undefined;
 }
 function getDate(r: Row) {
   return (pick(r, "metric_date", "date", "day") as string | undefined) ?? undefined;
 }
-function fmt(v: any) {
-  return v === undefined || v === null || v === "" ? "—" : String(v);
-}
-function num(v: any) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-function fmtNum(v: number) {
-  return Number.isFinite(v) ? v.toString() : "—";
-}
-function isoDaysAgo(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
+function fmt(v: any) { return v === undefined || v === null || v === "" ? "—" : String(v); }
+function num(v: any) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function fmtNum(v: number) { return Number.isFinite(v) ? v.toString() : "—"; }
+function isoDaysAgo(n: number) { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); }
 function thTd(header = false): React.CSSProperties {
-  return {
-    border: "1px solid #2a2a2a",
-    padding: "8px 10px",
-    textAlign: "left",
-    background: header ? "#111" : "transparent",
-  };
+  return { border: "1px solid #2a2a2a", padding: "8px 10px", textAlign: "left", background: header ? "#111" : "transparent" };
 }
-
 function Labeled(props: React.PropsWithChildren<{ label: string; style?: React.CSSProperties }>) {
   return (
     <div className="sd-stack col" style={{ gap: 4, ...props.style }}>
