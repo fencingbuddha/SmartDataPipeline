@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DashboardShell } from "../components/dashboard/DashboardShell";
 import { FiltersBar } from "../components/dashboard/FiltersBar";
 import { KpiTiles } from "../components/dashboard/KpiTiles";
@@ -34,7 +34,6 @@ async function fetchAnomalies(params: {
   windowN?: number; zThresh?: number;
 }): Promise<AnomPoint[]> {
   const { sourceName, metric, start, end, windowN = 7, zThresh = 3 } = params;
-
   const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
   if (start) qs.set("start_date", start);
   if (end) qs.set("end_date", end);
@@ -43,10 +42,8 @@ async function fetchAnomalies(params: {
 
   const r = await fetch(`${API_BASE}/api/metrics/anomaly/rolling?${qs.toString()}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-
   const js: any = await r.json();
 
-  // Normalize possible shapes to an array
   let raw: any = null;
   if (Array.isArray(js)) raw = js;
   else if (Array.isArray(js?.data)) raw = js.data;
@@ -63,13 +60,8 @@ async function fetchAnomalies(params: {
       .map(([k, v]: any) => ({ date: v.metric_date ?? v.date ?? k, value: v.value ?? v.value_sum ?? v.y ?? v.count ?? 0, z: v.z ?? v.score, flagged: v.is_anomaly ?? v.is_outlier ?? v.anomaly ?? v.outlier ?? v.flagged }));
     if (maybe.length) raw = maybe;
   }
+  if (!Array.isArray(raw)) return [];
 
-  if (!Array.isArray(raw)) {
-    console.warn("[anomaly] Unexpected response shape:", js);
-    return [];
-  }
-
-  // Map + filter: keep only flagged or |z| >= threshold
   const pts: AnomPoint[] = raw
     .map((row: any) => {
       const date = String(row.metric_date ?? row.date ?? row.ts ?? "");
@@ -88,7 +80,6 @@ async function fetchAnomalies(params: {
       return false;
     })
     .map(({ date, value, z }) => ({ date, value, z }));
-
   return pts;
 }
 
@@ -100,7 +91,6 @@ async function fetchForecast(sourceName: string, metric: string, start?: string,
   const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
   if (start) qs.set("start_date", start);
   if (end) qs.set("end_date", end);
-
   const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
 
@@ -112,7 +102,6 @@ async function fetchForecast(sourceName: string, metric: string, start?: string,
       yhat: Number(row.yhat ?? row.y_pred ?? row.prediction ?? row.value ?? row.y ?? 0),
     }))
     .filter(p => p.date && Number.isFinite(p.yhat));
-
   FC_CACHE.set(key, fc);
   return fc;
 }
@@ -138,6 +127,11 @@ export default function DashboardPage() {
   const [forecast, setForecast] = useState<ForecastPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /* ---------- NEW: upload state ---------- */
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
   // Quick range fills fields; still editable
   useEffect(() => {
@@ -217,85 +211,151 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAnoms, showForecast, windowN, zThresh]);
 
+  /* ---------- NEW: Upload handler (calls /api/ingest) ---------- */
+  async function handleUpload(file: File | null) {
+    if (!file) return;
+    setUploading(true);
+    setUploadMsg(null);
+    try {
+      const ct = (file.type || "").toLowerCase();
+      if (!ct.includes("csv")) {
+        setUploading(false);
+        setUploadMsg("Only CSV is supported from the button for now.");
+        return;
+      }
+      const qs = new URLSearchParams({
+        source_name: String(sourceName || "demo-source"),
+        default_metric: String(metric || "events_total"),
+      });
+      const form = new FormData();
+      form.append("file", file, file.name);
+      const resp = await fetch(`${API_BASE}/api/ingest?${qs.toString()}`, {
+        method: "POST",
+        body: form,
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok || body?.ok === false) {
+        throw new Error(body?.error?.message || `Upload failed (HTTP ${resp.status})`);
+      }
+      setUploadMsg(`Ingested ${body?.data?.rows_ingested ?? "?"} rows (${file.name}).`);
+      // refresh the dashboard to show newly ingested data
+      await runAll();
+    } catch (e: any) {
+      setUploadMsg(e?.message || "Upload failed.");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
   // Filters UI
   const filters = (
     <FiltersBar
-  Source={
-    <select data-testid="filter-source" value={sourceName} onChange={e=>setSourceName(e.target.value)}>
-      <option value="demo-source">demo-source</option>
-    </select>
-  }
-  Metric={
-    <select data-testid="filter-metric" value={metric} onChange={e=>setMetric(e.target.value)}>
-      <option value="events_total">events_total</option>
-    </select>
-  }
-  Start={
-    <input data-testid="filter-start" type="date" value={start}
-           onChange={(e)=>setStart(e.target.value)} max={end || undefined} />
-  }
-  End={
-    <input data-testid="filter-end" type="date" value={end}
-           onChange={(e)=>setEnd(e.target.value)} min={start || undefined} />
-  }
-  Apply={
-    <button data-testid="btn-run" className="sd-btn" onClick={runAll} disabled={loading}>
-      {loading ? "Running…" : "Run"}
-    </button>
-  }
-  Reset={
-    <button data-testid="btn-reset" className="sd-btn ghost" disabled={loading}
-      onClick={() => {
-        setSourceName("demo-source");
-        setMetric("events_total");
-        setDateRange("7");
-        setShowAnoms(false);
-        setShowForecast(false);
-        setWindowN(7);
-        setZThresh(3);
-        void runAll();
-      }}
-    >
-      Reset
-    </button>
-  }
-  Extra={
-    <div className="sd-stack row" style={{ gap: 10, alignItems: "center" }}>
-      <select data-testid="quick-range" value={dateRange}
-              onChange={(e)=>setDateRange(e.target.value as any)}>
-        <option value="7">Last 7 days</option>
-        <option value="14">Last 14 days</option>
-        <option value="30">Last 30 days</option>
-      </select>
+      Source={
+        <select data-testid="filter-source" value={sourceName} onChange={e=>setSourceName(e.target.value)}>
+          <option value="demo-source">demo-source</option>
+        </select>
+      }
+      Metric={
+        <select data-testid="filter-metric" value={metric} onChange={e=>setMetric(e.target.value)}>
+          <option value="events_total">events_total</option>
+        </select>
+      }
+      Start={
+        <input data-testid="filter-start" type="date" value={start}
+               onChange={(e)=>setStart(e.target.value)} max={end || undefined} />
+      }
+      End={
+        <input data-testid="filter-end" type="date" value={end}
+               onChange={(e)=>setEnd(e.target.value)} min={start || undefined} />
+      }
+      Apply={
+        <button data-testid="btn-run" className="sd-btn" onClick={runAll} disabled={loading}>
+          {loading ? "Running…" : "Run"}
+        </button>
+      }
+      Reset={
+        <button
+          data-testid="btn-reset"
+          className="sd-btn ghost"
+          disabled={loading}
+          onClick={() => {
+            // compute fresh defaults
+            const newStart = isoDaysAgo(6);
+            const newEnd   = isoDaysAgo(0);
 
-      <label className="small sd-muted">Window</label>
-      <input data-testid="anoms-window" type="number" min={3} max={60} value={windowN}
-             onChange={(e)=>setWindowN(Math.max(3, Math.min(60, Number(e.target.value)||7)))}
-             style={{ width: 64 }} />
+            // set ALL the resettable state first
+            setSourceName("demo-source");
+            setMetric("events_total");
+            setDateRange("7");          // keeps quick-range UI in sync
+            setStart(newStart);
+            setEnd(newEnd);
+            setShowAnoms(false);
+            setShowForecast(false);
+            setWindowN(7);
+            setZThresh(3);
 
-      <label className="small sd-muted">z≥</label>
-      <input data-testid="anoms-z" type="number" step="0.1" min={0} max={6} value={zThresh}
-             onChange={(e)=>setZThresh(Math.max(0, Math.min(6, Number(e.target.value)||3)))}
-             style={{ width: 64 }} />
+            // run after state has been committed
+            setTimeout(() => { void runAll(); }, 0);
+          }}
+        >
+          Reset
+        </button>
+      }
+      Extra={
+        <div className="sd-stack row" style={{ gap: 10, alignItems: "center" }}>
+          <select data-testid="quick-range" value={dateRange}
+                  onChange={(e)=>setDateRange(e.target.value as any)}>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
 
-      <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <input data-testid="toggle-anoms" type="checkbox"
-               checked={showAnoms} onChange={(e)=>setShowAnoms(e.target.checked)} />
-        Show anomalies
-      </label>
-      <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <input data-testid="toggle-forecast" type="checkbox"
-               checked={showForecast} onChange={(e)=>setShowForecast(e.target.checked)} />
-        Show forecast
-      </label>
-    </div>
-  }
-/>
+          <label className="small sd-muted">Window</label>
+          <input data-testid="anoms-window" type="number" min={3} max={60} value={windowN}
+                 onChange={(e)=>setWindowN(Math.max(3, Math.min(60, Number(e.target.value)||7)))}
+                 style={{ width: 64 }} />
+
+          <label className="small sd-muted">z≥</label>
+          <input data-testid="anoms-z" type="number" step="0.1" min={0} max={6} value={zThresh}
+                 onChange={(e)=>setZThresh(Math.max(0, Math.min(6, Number(e.target.value)||3)))}
+                 style={{ width: 64 }} />
+
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input data-testid="toggle-anoms" type="checkbox"
+                   checked={showAnoms} onChange={(e)=>setShowAnoms(e.target.checked)} />
+            Show anomalies
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input data-testid="toggle-forecast" type="checkbox"
+                   checked={showForecast} onChange={(e)=>setShowForecast(e.target.checked)} />
+            Show forecast
+          </label>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={(e)=>handleUpload(e.target.files?.[0] ?? null)}
+            data-testid="upload-file"
+          />
+          <button
+            type="button"
+            className="sd-btn"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+          >
+            {uploading ? "Uploading…" : "Upload CSV"}
+          </button>
+          {uploadMsg && <span className="sd-text-xs sd-muted" aria-live="polite">{uploadMsg}</span>}
+        </div>
+      }
+    />
   );
 
   return (
     <DashboardShell
-      headerRight={null} // single Run button lives in filters
+      headerRight={null}
       filters={filters}
       tiles={<KpiTiles kpis={kpis} />}
       left={

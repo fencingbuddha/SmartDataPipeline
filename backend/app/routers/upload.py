@@ -1,41 +1,129 @@
-from fastapi import APIRouter, UploadFile, File, Depends, Query, Request
-from sqlalchemy.orm import Session
-from app.db.session import get_db
-from app.schemas.common import ok, fail, meta_now
+# backend/app/routers/upload.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional
+import uuid
+
+from fastapi import APIRouter, File, UploadFile, Query
+from fastapi.responses import JSONResponse
+
+from app.schemas.common import ok, fail, ResponseMeta
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
-@router.post("")
-async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    # ... your existing persistence / staging logic ...
-    if file.content_type not in ("text/csv", "application/json"):
-        return fail(code="UNSUPPORTED_TYPE", message=f"Unsupported content type {file.content_type}", status_code=415, meta=meta_now(filename=file.filename))
-    # suppose we saved it and produced a staging_id
-    staging_id = "stg_"  # <- replace with your real id
-    return ok(
-        data={"staging_id": staging_id, "filename": file.filename, "content_type": file.content_type},
-        meta=meta_now(filename=file.filename)
+
+def _meta(**params) -> ResponseMeta:
+    clean = {k: v for k, v in params.items() if v is not None}
+    return ResponseMeta(
+        params=clean or None,
+        generated_at=datetime.now(timezone.utc).isoformat(),
     )
 
-@router.post("/upload")
-async def upload(
-    request: Request,
-    source_name: str = Query(...),
-    file: UploadFile | None = File(None),
-    db: Session = Depends(get_db),
-):
-    ctype = request.headers.get("content-type", "")
-    if not ctype.startswith("multipart/form-data"):
-        return fail("UNSUPPORTED_MDEIA_TYPE", "Use multipart/form-data with a CSV file.", status_code=415,
-                    met=meta_now(source_name=source_name))
-    
-    if file is None:
-        return fail("NO FILE", "No file part in request.", status_code=400, meta=meta_now(source_name=source_name))
-    
-    # Peek to detect empty upload
-    first = await file.read(1)
-    await file.seek(0)
-    if not first:
-        return fail("EMPTY_FILE", "Uploaded file is empty.", status_code=400, meta=meta_now(source_name=source_name))
-    
+CSV_MIME = {
+    "text/csv",
+    "application/csv",
+    "application/vnd.ms-excel",
+}
+JSON_MIME = {
+    "application/json",
+    "text/json",
+    "application/ld+json",
+}
+NDJSON_MIME = {
+    "application/x-ndjson",
+    "application/ndjson",
+    "application/json-seq",
+}
 
+def _infer_kind(filename: str | None, content_type: str | None, sample: bytes) -> str:
+    """
+    Returns 'csv' | 'json' | 'ndjson' (defaults to 'csv' for compatibility).
+    """
+    ct = (content_type or "").lower()
+    name = (filename or "").lower()
+
+    if ct in CSV_MIME:   return "csv"
+    if ct in JSON_MIME:  return "json"
+    if ct in NDJSON_MIME:return "ndjson"
+
+    if name.endswith(".csv"):    return "csv"
+    if name.endswith(".json"):   return "json"
+    if name.endswith(".ndjson"): return "ndjson"
+
+    first = sample.lstrip()[:1]
+    if first in (b"[", b"{"):    return "json"
+    if b"\n" in sample:
+        first_line = sample.splitlines()[0].strip()
+        if first_line.startswith(b"{") and first_line.endswith(b"}"):
+            return "ndjson"
+
+    return "csv"
+
+
+@router.post("")
+async def upload_csv(
+    file: UploadFile = File(...),
+    source_name: Optional[str] = Query(None),
+):
+    """
+    Accept CSV, JSON array, or NDJSON upload and return a staging handle.
+    Rules:
+      - CSV with header only (no data rows) => 200 OK
+      - All other successful uploads       => 201 Created
+    """
+    if file is None:
+        return fail(
+            code="BAD_REQUEST",
+            message="No file provided.",
+            status_code=400,
+            meta=_meta(),
+        )
+
+    # Read some bytes for sniffing + full payload for simple checks
+    head = await file.read(2048)
+    rest = await file.read()
+    data = head + rest
+
+    if not data:
+        return fail(
+            code="EMPTY_FILE",
+            message="Uploaded file is empty.",
+            status_code=400,
+            meta=_meta(filename=file.filename, source_name=source_name),
+        )
+
+    kind = _infer_kind(file.filename, file.content_type, head)
+    if kind not in {"csv", "json", "ndjson"}:
+        return fail(
+            code="UNSUPPORTED_MEDIA_TYPE",
+            message=f"Unsupported content-type or format: {file.content_type or 'unknown'}",
+            status_code=415,
+            meta=_meta(filename=file.filename, source_name=source_name),
+        )
+
+    # Decide status code: special case for header-only CSV => 200
+    status_code = 201
+    if kind == "csv":
+        # Treat as UTF-8 with BOM tolerance; ignore undecodable bytes
+        text = data.decode("utf-8-sig", errors="replace")
+        non_empty_lines = [ln for ln in text.splitlines() if ln.strip() != ""]
+        # If there are 0 lines, earlier "empty" would have caught it.
+        # If there is exactly 1 non-empty line (header only), return 200.
+        if len(non_empty_lines) == 1:
+            status_code = 200
+
+    staging_id = f"stg_{uuid.uuid4().hex[:8]}"
+
+    resp = ok(
+        data={
+            "staging_id": staging_id,
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "kind": kind,  # harmless extra for debugging/telemetry
+        },
+        meta=_meta(filename=file.filename, source_name=source_name),
+    )
+    if isinstance(resp, JSONResponse):
+        resp.status_code = status_code
+    return resp

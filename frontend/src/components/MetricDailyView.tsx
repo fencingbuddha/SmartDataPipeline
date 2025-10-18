@@ -12,6 +12,9 @@ export type MetricDailyViewProps = {
   error?: string | null;
   onRefresh?: () => void;
   onReset?: () => void;
+
+  showEmptyState?: boolean;
+  emptyStateText?: string;
 };
 
 export default function MetricDailyView({
@@ -23,6 +26,8 @@ export default function MetricDailyView({
   error = null,
   onRefresh,
   onReset,
+  showEmptyState = false,
+  emptyStateText = "No data for the selected Source/Metric/Date range. Try widening the date window or choosing a different source.",
 }: MetricDailyViewProps) {
   return (
     <section aria-label="Metric daily dashboard" className="space-y-3">
@@ -60,7 +65,21 @@ export default function MetricDailyView({
       <div data-testid="filters-section">{filters}</div>
       <div data-testid="tiles-section">{tiles}</div>
       <div data-testid="table-section">{table}</div>
-      <div data-testid="chart-section">{chart}</div>
+
+      <div data-testid="chart-section">
+        {showEmptyState ? (
+          <div
+            data-testid="empty-state"
+            role="status"
+            aria-live="polite"
+            className="sd-mt-2 sd-text-sm sd-text-neutral-600"
+          >
+            {emptyStateText}
+          </div>
+        ) : (
+          chart
+        )}
+      </div>
     </section>
   );
 }

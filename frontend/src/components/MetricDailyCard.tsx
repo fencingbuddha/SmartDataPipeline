@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect} from "react";
 import MetricDailyChart from "./MetricDailyChart";
 import { Card, Stack, Tile, Text } from "../ui";
 import { buildUrl } from "../lib/api";
