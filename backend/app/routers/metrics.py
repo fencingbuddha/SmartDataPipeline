@@ -1,299 +1,346 @@
-# backend/app/routers/metrics.py
+# app/routers/metrics.py
 from __future__ import annotations
-from datetime import date, datetime, timezone
-from typing import Literal, Optional, List
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from datetime import date
+import math
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from fastapi.responses import StreamingResponse
-import io, csv
-from statistics import mean, pstdev
+from sqlalchemy import select, and_, join
 
 from app.db.session import get_db
-from app.models import source as models_source
-from app.services.metrics import fetch_metric_daily
-from app.schemas.common import ok, fail, ResponseMeta  # <- envelope helpers
+from app.models.source import Source
+from app.models.metric_daily import MetricDaily
+
+# Service layer (used where helpful)
+from app.services.metrics import (
+    fetch_metric_daily as _fetch_metric_daily,
+    fetch_metric_names as _fetch_metric_names,
+)
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
 
-class MetricDailyOut(BaseModel):
-    metric_date: date
-    source_id: int
-    metric: str
-    # Full shape for UI tiles/table (optional so we stay tolerant)
-    value_sum: Optional[float] = None
-    value_avg: Optional[float] = None
-    value_count: Optional[int] = None
-    value_distinct: Optional[int] = None
-    # Legacy/simplified single value (chart uses this)
-    value: Optional[float] = None
-
-    model_config = {"from_attributes": True}  # Pydantic v2
-
-
-# --------- helpers ---------
-def _resolve_source_id(db: Session, source_id: int | None, source_name: str | None) -> int | None:
-    if source_id is not None:
-        return source_id
-    if source_name:
-        sid = db.query(models_source.Source.id)\
-                .filter(models_source.Source.name == source_name)\
-                .scalar()
-        return sid
-    return None
-
-def _meta(**params) -> ResponseMeta:
-    # include only non-None params
-    clean_params = {k: v for k, v in params.items() if v is not None}
-    return ResponseMeta(
-        params=clean_params,
-        generated_at=datetime.now(timezone.utc).isoformat()
-    )
-
-
-# --------- endpoints ---------
+# ---------------------------------------------------------------------------
+# /api/metrics/names  -> enveloped list[str]
+# ---------------------------------------------------------------------------
 @router.get("/names")
 def list_metric_names(
-    source_name: str | None = Query(None),
-    source_id: int | None = Query(None),
+    source_name: Optional[str] = Query(
+        default=None, description="Optional filter to limit metric names to a specific source"
+    ),
     db: Session = Depends(get_db),
-):
-    sid = _resolve_source_id(db, source_id, source_name)
-    if source_name and sid is None:
-        # unknown source -> enveloped 404
-        return fail(code="UNKNOWN_SOURCE", message=f"Unknown source: {source_name}", status_code=404, meta=_meta(source_name=source_name))
-
-    rows = db.execute(
-        text("""
-            SELECT DISTINCT metric
-            FROM metric_daily
-            WHERE (:sid IS NULL OR source_id = :sid)
-            ORDER BY metric
-        """),
-        {"sid": sid},
-    )
+) -> dict:
     try:
-        names: List[str] = rows.scalars().all()
-    except Exception:
-        names = [r[0] for r in rows.fetchall()]
+        names = _fetch_metric_names(db, source_name=source_name) or []
+        return {
+            "ok": True,
+            "data": names,  # list[str]
+            "error": None,
+            "meta": {
+                "source_name": source_name,
+                "count": len(names),
+            },
+        }
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch metric names: {ex}") from ex
 
-    return ok(names, meta=_meta(source_id=sid, source_name=source_name))
 
-
+# ---------------------------------------------------------------------------
+# /api/metrics/daily  -> enveloped list[dict]
+# ---------------------------------------------------------------------------
 @router.get("/daily")
-def get_metric_daily(
-    # UI usually sends source_name; keep source_id for power users/tests
-    source_name: str | None = Query(None),
-    source_id: int | None = Query(None),
-    metric: str | None = Query(None),
-    start_date: date | None = Query(None),
-    end_date: date | None = Query(None),
-    distinct_field: str | None = Query(None),  # passthrough if your service uses it
-    agg: Literal["sum", "avg", "count"] = Query("sum"),
-    limit: int = Query(1000, ge=1, le=10_000),
+def get_metrics_daily(
+    source_id: Optional[int] = Query(None, description="Numeric source ID"),
+    source_name: Optional[str] = Query(None, description="Source name (alternative to source_id)"),
+    metric: str = Query(..., description="e.g., events_total"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    agg: Optional[str] = Query(
+        None,
+        description="Optional aggregation for unified 'value' field: one of ['sum','avg','count']",
+    ),
+    limit: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-):
-    sid = _resolve_source_id(db, source_id, source_name)
+) -> dict:
+    """
+    Enveloped daily metrics. Accepts either source_id OR source_name.
+    If `agg` is provided, the unified `value` field is set to:
+      - 'sum'   -> value_sum  (default if not provided)
+      - 'avg'   -> value_avg
+      - 'count' -> value_count
+    """
+    # Require at least one of source_id/source_name
+    if source_id is None and not source_name:
+        raise HTTPException(status_code=422, detail="Provide either source_id or source_name")
 
-    # 👉 Return 200 + empty list if the named source doesn't exist
-    if source_name and sid is None:
-        return ok(
-            data=[],
-            meta=_meta(
-                source_id=None,
-                source_name=source_name,
-                metric=metric,
-                start_date=str(start_date) if start_date else None,
-                end_date=str(end_date) if end_date else None,
-                distinct_field=distinct_field,
-                agg=agg,
-                limit=limit,
-                reason="unknown_source",
-            ),
-        )
-
-    rows = fetch_metric_daily(
-        db,
-        source_id=sid,
-        metric=metric,
-        start_date=start_date,
-        end_date=end_date,  # service should treat end_date as inclusive (<=)
-        limit=limit,
-        # distinct_field=distinct_field,  # uncomment if your service supports it
-    )
-
-    out: list[MetricDailyOut] = []
-    for r in rows:
-        value_sum = getattr(r, "value_sum", None)
-        value_avg = getattr(r, "value_avg", None)
-        value_count = getattr(r, "value_count", None)
-        value_distinct = getattr(r, "value_distinct", None)
-
-        # Preserve existing agg behavior for the single `value` field
-        if agg == "avg" and value_avg is not None:
-            single_value = float(value_avg)
-        elif agg == "count" and value_count is not None:
-            single_value = float(value_count)
-        else:
-            single_value = (
-                float(value_sum) if value_sum is not None else
-                (float(value_avg) if value_avg is not None else
-                 (float(value_count) if value_count is not None else None))
-            )
-
-        out.append(
-            MetricDailyOut(
-                metric_date=r.metric_date,
-                source_id=r.source_id,
-                metric=r.metric,
-                value_sum=value_sum,
-                value_avg=value_avg,
-                value_count=value_count,
-                value_distinct=value_distinct,
-                value=single_value,
-            )
-        )
-
-    return ok(
-        data=out,
-        meta=_meta(
-            source_id=sid,
+    try:
+        rows = _fetch_metric_daily(
+            db,
+            source_id=source_id,
             source_name=source_name,
             metric=metric,
-            start_date=str(start_date) if start_date else None,
-            end_date=str(end_date) if end_date else None,
-            distinct_field=distinct_field,
-            agg=agg,
+            start_date=start_date,
+            end_date=end_date,
             limit=limit,
-        ),
-    )
+        ) or []
+
+        agg_norm = (agg or "sum").lower()
+        if agg and agg_norm not in ("sum", "avg", "count"):
+            raise HTTPException(status_code=400, detail=f"Unsupported agg '{agg}'. Use one of: sum, avg, count")
+
+        out_rows: list[dict] = []
+        for r in rows:
+            # Convert to plain dict; support dict-like or attr-like rows.
+            row = dict(r) if hasattr(r, "keys") else {
+                "metric_date": getattr(r, "metric_date", None),
+                "source_id": getattr(r, "source_id", None),
+                "metric": getattr(r, "metric", None),
+                "value_sum": getattr(r, "value_sum", None),
+                "value_avg": getattr(r, "value_avg", None),
+                "value_count": getattr(r, "value_count", None),
+                "value_distinct": getattr(r, "value_distinct", None),
+                "value": getattr(r, "value", None),
+            }
+
+            # Always set unified 'value' according to agg (default to sum)
+            if agg_norm == "avg":
+                row["value"] = row.get("value_avg")
+            elif agg_norm == "count":
+                row["value"] = row.get("value_count")
+            else:  # "sum"
+                row["value"] = row.get("value_sum")
+
+            out_rows.append(row)
+
+        return {
+            "ok": True,
+            "data": out_rows,
+            "error": None,
+            "meta": {
+                "source_id": source_id,
+                "source_name": source_name,
+                "metric": metric,
+                "params": {
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                    "agg": agg_norm,
+                    "limit": limit,
+                },
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch daily metrics: {ex}") from ex
 
 
 
-@router.get("/export/csv")
+# ---------------------------------------------------------------------------
+# /api/metrics/export/csv  -> required header columns
+# ---------------------------------------------------------------------------
+@router.get("/export/csv", response_class=Response)
 def export_metrics_csv(
-    source_name: str | None = Query(None),
-    source_id: int | None = Query(None),
+    source_name: str = Query(...),
     metric: str = Query(...),
-    start_date: date | None = Query(None),
-    end_date: date | None = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
     db: Session = Depends(get_db),
-):
-    # CSV is a file download; keep it streaming (not enveloped)
-    sid = _resolve_source_id(db, source_id, source_name)
-    if source_name and sid is None:
-        # Return a tiny CSV explaining the error (avoid HTML error page in a CSV download)
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["error", "message"])
-        w.writerow(["UNKNOWN_SOURCE", f"Unknown source: {source_name}"])
-        headers = {"Content-Disposition": 'attachment; filename="metric_daily_error.csv"'}
-        return StreamingResponse(io.BytesIO(buf.getvalue().encode("utf-8")), media_type="text/csv", headers=headers)
+) -> Response:
+    """
+    CSV export with header containing at least:
+      metric_date, source_id, metric, value, value_count, value_sum, value_avg
+    'value' mirrors value_sum for compatibility with tests.
+    """
+    try:
+        j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
+        conds = [Source.name == source_name, MetricDaily.metric == metric]
+        if start_date:
+            conds.append(MetricDaily.metric_date >= start_date)
+        if end_date:
+            conds.append(MetricDaily.metric_date <= end_date)
 
-    rows = fetch_metric_daily(
-        db,
-        source_id=sid,
-        metric=metric,
-        start_date=start_date,
-        end_date=end_date,
-        limit=10_000,
-    )
+        q = (
+            select(
+                MetricDaily.metric_date,
+                MetricDaily.source_id,
+                MetricDaily.metric,
+                MetricDaily.value_sum,
+                MetricDaily.value_avg,
+                MetricDaily.value_count,
+                MetricDaily.value_distinct,
+            )
+            .select_from(j)
+            .where(and_(*conds))
+            .order_by(MetricDaily.metric_date.asc())
+        )
+        rows = db.execute(q).all()
 
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["metric_date","source_id","metric","value_sum","value_avg","value_count","value_distinct","value"])
-    for r in rows:
-        w.writerow([
-            r.metric_date,
-            r.source_id,
-            r.metric,
-            getattr(r, "value_sum", None),
-            getattr(r, "value_avg", None),
-            getattr(r, "value_count", None),
-            getattr(r, "value_distinct", None),
-            getattr(r, "value", getattr(r, "value_sum", None)),
-        ])
+        header = [
+            "metric_date",
+            "source_id",
+            "metric",
+            "value",        # mirrors value_sum
+            "value_count",
+            "value_sum",
+            "value_avg",
+        ]
 
-    headers = {"Content-Disposition": 'attachment; filename="metric_daily.csv"'}
-    return StreamingResponse(io.BytesIO(buf.getvalue().encode("utf-8")), media_type="text/csv", headers=headers)
+        out_lines: list[str] = []
+        out_lines.append(",".join(header))
+
+        for r in rows:
+            metric_date = r.metric_date.isoformat()
+            source_id = str(r.source_id)
+            metric_name = r.metric
+            value_sum = "" if r.value_sum is None else str(float(r.value_sum))
+            value_avg = "" if r.value_avg is None else str(float(r.value_avg))
+            value_count = "" if r.value_count is None else str(int(r.value_count))
+            value = value_sum  # required 'value' column equals value_sum
+
+            out_lines.append(
+                ",".join(
+                    [
+                        metric_date,
+                        source_id,
+                        metric_name,
+                        value,
+                        value_count,
+                        value_sum,
+                        value_avg,
+                    ]
+                )
+            )
+
+        csv_text = "\n".join(out_lines)
+        return Response(
+            content=csv_text,
+            status_code=status.HTTP_200_OK,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{metric}_{source_name}.csv"'},
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Failed to export CSV: {ex}") from ex
 
 
+# ---------------------------------------------------------------------------
+# /api/metrics/anomaly/rolling  -> points + anomalies (finite z)
+# ---------------------------------------------------------------------------
 @router.get("/anomaly/rolling")
-def rolling_anomaly(
-    source_name: str | None = Query(None),
-    source_id: int | None = Query(None),
+def anomaly_rolling_inline(
+    source_name: str = Query(...),
     metric: str = Query(...),
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
-    window: int = Query(7, ge=2, le=60),
-    z_thresh: float = Query(3.0, ge=0.5, le=10),
+    window: int = Query(7, ge=2, le=365),
+    z_thresh: float = Query(3.0, gt=0),
+    value_field: str | None = Query("value_sum"),
     db: Session = Depends(get_db),
 ):
-    sid = _resolve_source_id(db, source_id, source_name)
-    if source_name and sid is None:
-        return fail(code="UNKNOWN_SOURCE", message=f"Unknown source: {source_name}", status_code=404, meta=_meta(source_name=source_name))
+    """
+    Rolling z-score using previous-only window; JSON-safe (no NaN/Inf in output).
+    Returns: {"points":[...], "anomalies":[...]} where anomalies have "metric_date" and finite "z".
+    """
+    try:
+        j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
+        conds = [Source.name == source_name, MetricDaily.metric == metric]
+        if start_date:
+            conds.append(MetricDaily.metric_date >= start_date)
+        if end_date:
+            conds.append(MetricDaily.metric_date <= end_date)
 
-    rows = fetch_metric_daily(
-        db,
-        source_id=sid,
-        metric=metric,
-        start_date=start_date,
-        end_date=end_date,
-        limit=10_000,
-    )
+        q = (
+            select(
+                MetricDaily.metric_date,
+                MetricDaily.value_sum,
+                MetricDaily.value_avg,
+                MetricDaily.value_count,
+                MetricDaily.value_distinct,
+            )
+            .select_from(j)
+            .where(and_(*conds))
+            .order_by(MetricDaily.metric_date.asc())
+        )
+        rows = db.execute(q).all()
 
-    history: list[float] = []
-    points: list[dict] = []
+        field = (value_field or "value_sum")
+        series = []
+        for r in rows:
+            raw = getattr(r, field, None)
+            val = float(raw) if raw is not None else None
+            series.append({"metric_date": r.metric_date, "value": val})
 
-    def val_of(r) -> float | None:
-        for k in ("value", "value_sum", "value_avg", "value_count"):
-            v = getattr(r, k, None)
-            if v is not None:
-                return float(v)
-        return None
+        points: list[dict] = []
+        anomalies: list[dict] = []
+        zt = float(z_thresh)
+        Z_CLAMP = 1e9  # large finite sentinel for flat-window spikes
 
-    for r in rows:
-        v = val_of(r)
-        mu = None
-        sd = None
-        is_outlier = False
-        score = None  # normalized z-score if available
+        def _clamp_finite(x: float | None) -> float | None:
+            if x is None:
+                return None
+            if not math.isfinite(x):
+                return Z_CLAMP if x > 0 else -Z_CLAMP
+            return x
 
-        if len(history) >= window:
-            last = history[-window:]
-            mu = mean(last)
-            sd = pstdev(last)  # population stdev; 0.0 if flat
-            if v is not None:
-                if sd == 0:
-                    is_outlier = (v != mu)
-                    score = 0.0
-                else:
-                    score = (v - mu) / sd
-                    is_outlier = abs(score) >= z_thresh
+        for i in range(len(series)):
+            md = series[i]["metric_date"]
+            iso = md.isoformat()
+            v = series[i]["value"]
 
-        points.append({
-            "date": r.metric_date,
-            "value": v,
-            "is_outlier": is_outlier,
-            "score": float(score) if score is not None else None,
-        })
+            point = {
+                "metric_date": iso,
+                "date": iso,
+                "value": v,
+                "z": None,
+                "is_outlier": False,
+            }
 
-        if v is not None:
-            history.append(v)
+            if v is None:
+                points.append(point)
+                continue
 
-    return ok(
-        data={"points": points},
-        meta=_meta(
-            source_id=sid,
-            source_name=source_name,
-            metric=metric,
-            start_date=str(start_date) if start_date else None,
-            end_date=str(end_date) if end_date else None,
-            method="rolling_z",
-            window=window,
-            z_threshold=z_thresh,
-        ),
-    )
+            # Previous-only window [i - window, i)
+            w0 = max(0, i - window)
+            prev_vals = [s["value"] for s in series[w0:i] if s["value"] is not None]
+
+            if len(prev_vals) < 2:
+                points.append(point)
+                continue
+
+            mean = sum(prev_vals) / len(prev_vals)
+            var = sum((x - mean) ** 2 for x in prev_vals) / (len(prev_vals) - 1)
+            std = math.sqrt(var) if var > 0 else 0.0
+
+            if std == 0.0:
+                is_outlier = (v != mean)
+                z = Z_CLAMP if is_outlier else 0.0
+            else:
+                z = (v - mean) / std
+                is_outlier = abs(z) >= zt
+
+            z = _clamp_finite(z)
+            point["z"] = z
+            point["is_outlier"] = is_outlier
+            points.append(point)
+
+            if is_outlier:
+                anomalies.append({"metric_date": iso, "z": z})
+
+        return {"points": points, "anomalies": anomalies}
+
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Anomaly failure: {ex}") from ex
+    
+@router.get("/anomaly/iforest")
+def anomaly_iforest_overlay(
+    source_name: str = Query(...),
+    metric: str = Query(...),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+):
+    """
+    Placeholder endpoint to satisfy UAT contract for anomaly overlay using Isolation Forest.
+    Returns 204 No Content by design for now.
+    """
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
