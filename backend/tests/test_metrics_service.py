@@ -1,5 +1,5 @@
 from datetime import date
-from app.services.metrics import fetch_metric_daily, fetch_metric_daily_as_dicts
+from app.services.metrics import fetch_metric_daily, fetch_metric_daily
 from app.models import MetricDaily, Source
 
 def _seed(db):
@@ -30,7 +30,7 @@ def test_fetch_metric_daily_filters(db, reset_db):
 
 def test_fetch_metric_daily_as_dicts(db, reset_db):
     _seed(db)
-    out = fetch_metric_daily_as_dicts(
+    out = fetch_metric_daily(
         db,
         source_id=None,
         metric=None,

@@ -76,7 +76,6 @@ def _seed_series_with_spike(db):
 
     db.commit()
 
-
 def test_anomaly_rolling_flags_spike(db, reset_db):
     _seed_series_with_spike(db)
     r = client.get(
@@ -88,7 +87,7 @@ def test_anomaly_rolling_flags_spike(db, reset_db):
             "end_date": "2025-09-08",
             "window": 3,
             "z_thresh": 3.0,
-            "value_field": "value_sum",  # ignored by API, harmless
+            "value_field": "value_sum",
         },
     )
     assert r.status_code == 200, r.text

@@ -1,268 +1,205 @@
+# app/services/metrics.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import date
-from typing import List, Optional, Dict, Any
+from typing import Iterable, List, Optional, Union
 
-from sqlalchemy import text
+from sqlalchemy import and_, select, join
 from sqlalchemy.orm import Session
+
+from app.models.metric_daily import MetricDaily
+from app.models.source import Source
 
 
 @dataclass
-class MetricDailyRow:
-    metric_date: str
-    source_id: int
-    metric: str
-    value_sum: Optional[float]
-    value_avg: Optional[float]
-    value_count: Optional[float]
-    value_distinct: Optional[float]
-    value: Optional[float]
+class MetricDailyRow(dict):
+    """
+    Dict-like row that ALSO supports attribute access (r.value, r.metric_date, ...).
+    """
+    __slots__ = ()
 
+    def __init__(self, **kwargs):
+        # Accept only keyword args for clarity, then init the dict
+        super().__init__(**kwargs)
 
-def _to_float(v: Any) -> Optional[float]:
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except Exception:
-        return None
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as ex:
+            raise AttributeError(name) from ex
 
+    def to_dict(self) -> dict:
+        return dict(self)
 
-def _row_value(value: Any, value_sum: Any, value_avg: Any, value_count: Any) -> Optional[float]:
-    """Preferred value: value -> value_sum -> value_avg -> value_count."""
-    for cand in (value, value_sum, value_avg, value_count):
-        f = _to_float(cand)
-        if f is not None:
-            return f
-    return None
+def _normalize_sql_row(r) -> MetricDailyRow:
+    metric_date_iso = r.metric_date.isoformat() if r.metric_date else None
+    source_id = int(r.source_id) if r.source_id is not None else None
+    value_sum = float(r.value_sum) if r.value_sum is not None else None
+    value_avg = float(r.value_avg) if r.value_avg is not None else None
+    value_count = int(r.value_count) if r.value_count is not None else None
+    value_distinct = int(r.value_distinct) if r.value_distinct is not None else None
 
-
-def _has_column(db: Session, table_name: str, column_name: str, schema: str = "public") -> bool:
-    """Return True if (schema.table_name).column_name exists."""
-    q = text(
-        """
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = :schema
-          AND table_name   = :table
-          AND column_name  = :column
-        LIMIT 1
-        """
+    return MetricDailyRow(
+        metric_date=metric_date_iso,
+        source_id=source_id,
+        metric=r.metric,
+        value_sum=value_sum,
+        value_avg=value_avg,
+        value_count=value_count,
+        value_distinct=value_distinct,
+        value=value_sum,  # by convention
     )
-    return db.execute(q, {"schema": schema, "table": table_name, "column": column_name}).first() is not None
 
-
+# change the signature: metric is Optional
 def fetch_metric_daily(
     db: Session,
     *,
+    metric: Optional[str] = None,
     source_id: Optional[int] = None,
     source_name: Optional[str] = None,
-    metric: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    limit: int = 1000,
-    distinct_field: Optional[str] = None,
-    agg: Optional[str] = None,
+    limit: Optional[int] = None,
+    order: str = "asc",
 ) -> List[MetricDailyRow]:
     """
-    Fetch rows from metric_daily with optional filters (inclusive dates).
-    Returns a list of MetricDailyRow with attribute-style access.
+    Fetch daily metric rows with flexible filtering.
+
+    If `metric` is None, no metric-name filter is applied (used by tests).
     """
-    joins: List[str] = []
-    where = ["1=1"]
-    params: Dict[str, object] = {"limit": int(limit)}
+    j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
+    conds = []                              # was: [MetricDaily.metric == metric]
+
+    # add metric filter only when provided
+    if metric is not None:
+        conds.append(MetricDaily.metric == metric)
 
     if source_id is not None:
-        where.append("md.source_id = :source_id")
-        params["source_id"] = source_id
+        conds.append(MetricDaily.source_id == source_id)
     elif source_name:
-        joins.append("JOIN sources s ON s.id = md.source_id")
-        where.append("s.name = :source_name")
-        params["source_name"] = source_name
+        conds.append(Source.name == source_name)
 
-    if metric:
-        where.append("md.metric = :metric")
-        params["metric"] = metric
     if start_date:
-        where.append("md.metric_date >= :start_date")
-        params["start_date"] = start_date
+        conds.append(MetricDaily.metric_date >= start_date)
     if end_date:
-        where.append("md.metric_date <= :end_date")
-        params["end_date"] = end_date
+        conds.append(MetricDaily.metric_date <= end_date)
 
-    # Build SELECT list. If md.value column doesn't exist, select a typed NULL so the key is always present.
-    select_cols = """
-            md.metric_date::date        AS d,
-            md.source_id                AS source_id,
-            md.metric                   AS metric,
-            md.value_sum                AS value_sum,
-            md.value_avg                AS value_avg,
-            md.value_count              AS value_count,
-            md.value_distinct           AS value_distinct
-    """.strip()
+    stmt = (
+        select(
+            MetricDaily.metric_date,
+            MetricDaily.source_id,
+            MetricDaily.metric,
+            MetricDaily.value_sum,
+            MetricDaily.value_avg,
+            MetricDaily.value_count,
+            MetricDaily.value_distinct,
+        )
+        .select_from(j)
+        .where(and_(*conds))
+    )
 
-    if _has_column(db, "metric_daily", "value"):
-        select_cols += ", md.value AS value"
+    if order.lower() == "desc":
+        stmt = stmt.order_by(MetricDaily.metric_date.desc())
     else:
-        select_cols += ", NULL::double precision AS value"
+        stmt = stmt.order_by(MetricDaily.metric_date.asc())
 
-    sql = f"""
-        SELECT
-            {select_cols}
-        FROM metric_daily md
-        {' '.join(joins)}
-        WHERE {' AND '.join(where)}
-        ORDER BY d, md.source_id, md.metric
-        LIMIT :limit
-    """
+    if limit and isinstance(limit, int) and limit > 0:
+        stmt = stmt.limit(limit)
 
-    rows = db.execute(text(sql), params).mappings().all()
-
-    out: List[MetricDailyRow] = []
-    for r in rows:
-        d = r["d"]
-        # Build final "value" fallback
-        final_value = _row_value(
-            r.get("value"),
-            r.get("value_sum"),
-            r.get("value_avg"),
-            r.get("value_count"),
-        )
-        out.append(
-            MetricDailyRow(
-                metric_date=d.isoformat() if hasattr(d, "isoformat") else str(d),
-                source_id=int(r["source_id"]),
-                metric=str(r["metric"]),
-                value_sum=_to_float(r.get("value_sum")),
-                value_avg=_to_float(r.get("value_avg")),
-                value_count=_to_float(r.get("value_count")),
-                value_distinct=_to_float(r.get("value_distinct")),
-                value=final_value,
-            )
-        )
-    return out
+    rows = db.execute(stmt).all()
+    return [_normalize_sql_row(r) for r in rows]
 
 
 def fetch_metric_daily_as_dicts(
     db: Session,
     *,
+    metric: str,
     source_id: Optional[int] = None,
     source_name: Optional[str] = None,
-    metric: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    limit: int = 1000,
-) -> List[Dict[str, Any]]:
+    limit: Optional[int] = None,
+    order: str = "asc",
+) -> List[dict]:
     """
-    Compact dicts with expected keys: metric_date, source_id, metric, value.
+    Convenience wrapper: returns list of dicts for easy JSON serialization.
+    Used by routers.
     """
-    rows = fetch_metric_daily(
+    objs = fetch_metric_daily(
         db,
+        metric=metric,
         source_id=source_id,
         source_name=source_name,
-        metric=metric,
         start_date=start_date,
         end_date=end_date,
         limit=limit,
+        order=order,
     )
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        out.append(
-            {
-                "metric_date": r.metric_date,
-                "source_id": r.source_id,
-                "metric": r.metric,
-                "value": r.value,
-                # keep extras
-                "value_sum": r.value_sum,
-                "value_avg": r.value_avg,
-                "value_count": r.value_count,
-                "value_distinct": r.value_distinct,
-            }
-        )
-    return out
+    return [o.to_dict() for o in objs]
 
 
-def fetch_metric_names(
-    db: Session,
-    *,
-    source_name: Optional[str] = None,
-) -> List[str]:
+def fetch_metric_names(db: Session, *, source_name: Optional[str] = None) -> List[str]:
     """
-    Distinct metric names, optionally scoped by source_name.
+    Return distinct metric names, optionally scoped by source_name.
     """
+    j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
     if source_name:
-        return (
-            db.execute(
-                text(
-                    """
-                    SELECT DISTINCT md.metric
-                    FROM metric_daily md
-                    JOIN sources s ON s.id = md.source_id
-                    WHERE s.name = :source_name
-                    ORDER BY md.metric
-                    """
-                ),
-                {"source_name": source_name},
+        stmt = (
+            select(MetricDaily.metric)
+            .select_from(j)
+            .where(Source.name == source_name)
+            .distinct()
+            .order_by(MetricDaily.metric.asc())
+        )
+    else:
+        stmt = (
+            select(MetricDaily.metric)
+            .select_from(j)
+            .distinct()
+            .order_by(MetricDaily.metric.asc())
+        )
+    rows = db.execute(stmt).all()
+    return [r.metric for r in rows]
+
+
+def to_csv(rows: Iterable[Union[MetricDailyRow, dict]]) -> str:
+    """
+    Serialize rows to CSV with the expected columns.
+    Accepts either MetricDailyRow objects or dicts with equivalent keys.
+    """
+    header = [
+        "metric_date",
+        "source_id",
+        "metric",
+        "value",        # mirrors value_sum
+        "value_count",
+        "value_sum",
+        "value_avg",
+    ]
+    lines = [",".join(header)]
+
+    def _get(row, key):
+        if isinstance(row, MetricDailyRow):
+            return getattr(row, key)
+        return row.get(key)
+
+    def _fmt(v):
+        return "" if v is None else str(v)
+
+    for r in rows:
+        lines.append(
+            ",".join(
+                [
+                    _fmt(_get(r, "metric_date")),
+                    _fmt(_get(r, "source_id")),
+                    _fmt(_get(r, "metric")),
+                    _fmt(_get(r, "value")),
+                    _fmt(_get(r, "value_count")),
+                    _fmt(_get(r, "value_sum")),
+                    _fmt(_get(r, "value_avg")),
+                ]
             )
-            .scalars()
-            .all()
         )
-    return db.execute(text("SELECT DISTINCT metric FROM metric_daily ORDER BY metric")).scalars().all()
 
-
-def rolling_anomalies(
-    db: Session,
-    *,
-    source_id: Optional[int] = None,
-    source_name: Optional[str] = None,
-    metric: str,
-    start_date: date,
-    end_date: date,
-    window: int = 3,
-    z_threshold: float = 2.0,
-) -> List[Dict[str, Any]]:
-    """
-    Reference implementation available for use if you switch the router to call this.
-    (Your current router-side implementation is fine once rows have attribute access.)
-    """
-    # Use the dict version
-    series = fetch_metric_daily_as_dicts(
-        db,
-        source_id=source_id,
-        source_name=source_name,
-        metric=metric,
-        start_date=start_date,
-        end_date=end_date,
-        limit=10_000,
-    )
-
-    # Simple rolling z-score of previous `window` points
-    vals: List[float] = []
-    out: List[Dict[str, Any]] = []
-    from statistics import mean, pstdev
-
-    for row in series:
-        v = row["value"]
-        mu = None
-        sd = None
-        is_outlier = False
-        if len(vals) >= window:
-            last = vals[-window:]
-            mu = mean(last)
-            sd = pstdev(last) if len(set(last)) > 1 else 0.0
-            if sd and v is not None and abs(v - mu) >= z_threshold * sd:
-                is_outlier = True
-        out.append(
-            {
-                "date": row["metric_date"],
-                "value": v,
-                "rolling_mean": mu,
-                "rolling_std": sd,
-                "is_outlier": is_outlier,
-            }
-        )
-        if v is not None:
-            vals.append(v)
-    return out
+    return "\n".join(lines)
