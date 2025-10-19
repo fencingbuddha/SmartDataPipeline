@@ -53,6 +53,9 @@ export default function MetricDailyChart({
 
   const hasForecast = Array.isArray(forecast) && forecast.length > 0;
 
+  // Disable Recharts animations so the line renders fully on first paint
+  const NO_ANIM = { isAnimationActive: false, animationDuration: 0 } as const;
+
   return (
     <div data-testid="chart" style={{ position: "relative", width: "100%", height }}>
       <ResponsiveContainer>
@@ -65,21 +68,26 @@ export default function MetricDailyChart({
             formatter={(v: any, n: string) => [v, n === "value" ? "Actual" : n === "yhat" ? "Forecast" : n]}
           />
 
+          {/* Actual series — animation OFF */}
           <Line
+            {...NO_ANIM}
             type="monotone"
             dataKey="value"
             name="Actual"
             strokeWidth={2}
             connectNulls
             activeDot={false}
+            // static dot: only render anomaly points (no animation)
             dot={({ cx, cy, payload }: any) =>
               payload?.__anom ? <circle cx={cx} cy={cy} r={4} fill="#dc2626" /> : <g />
             }
           />
 
+          {/* Forecast series — animation OFF */}
           {hasForecast ? (
             <Layer>
               <Line
+                {...NO_ANIM}
                 type="monotone"
                 dataKey="yhat"
                 name="Forecast"
@@ -87,7 +95,6 @@ export default function MetricDailyChart({
                 strokeDasharray="4 4"
                 dot={false}
                 connectNulls
-                isAnimationActive={false}
               />
             </Layer>
           ) : null}
