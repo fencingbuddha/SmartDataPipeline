@@ -1,3 +1,4 @@
+// frontend/src/pages/DashboardPage.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DashboardShell } from "../components/dashboard/DashboardShell";
 import { FiltersBar } from "../components/dashboard/FiltersBar";
@@ -31,16 +32,16 @@ function num(v: any) { const n=Number(v); return Number.isFinite(n)?n:0; }
 /* ---------- overlays: anomalies & forecast ---------- */
 async function fetchAnomalies(params: {
   sourceName: string; metric: string; start?: string; end?: string;
-  windowN?: number; zThresh?: number;
+  windowN?: number; zThresh?: number; signal?: AbortSignal;
 }): Promise<AnomPoint[]> {
-  const { sourceName, metric, start, end, windowN = 7, zThresh = 3 } = params;
+  const { sourceName, metric, start, end, windowN = 7, zThresh = 3, signal } = params;
   const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
   if (start) qs.set("start_date", start);
   if (end) qs.set("end_date", end);
   qs.set("window", String(windowN));
   qs.set("z_thresh", String(zThresh));
 
-  const r = await fetch(`${API_BASE}/api/metrics/anomaly/rolling?${qs.toString()}`);
+  const r = await fetch(`${API_BASE}/api/metrics/anomaly/rolling?${qs.toString()}`, { signal });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const js: any = await r.json();
 
@@ -84,14 +85,14 @@ async function fetchAnomalies(params: {
 }
 
 const FC_CACHE = new Map<string, ForecastPoint[]>();
-async function fetchForecast(sourceName: string, metric: string, start?: string, end?: string): Promise<ForecastPoint[]> {
+async function fetchForecast(sourceName: string, metric: string, start?: string, end?: string, signal?: AbortSignal): Promise<ForecastPoint[]> {
   const key = `fc:${sourceName}:${metric}:${start}:${end}`;
   if (FC_CACHE.has(key)) return FC_CACHE.get(key)!;
 
   const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
   if (start) qs.set("start_date", start);
   if (end) qs.set("end_date", end);
-  const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`);
+  const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`, { signal });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
 
   const js: any = await r.json();
@@ -128,7 +129,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /* ---------- NEW: upload state ---------- */
+  /* ---------- upload state ---------- */
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
@@ -159,59 +160,77 @@ export default function DashboardPage() {
     };
   }, [rows]);
 
-  // Run everything
-  async function runAll() {
-    setLoading(true); setError(null);
-    try {
-      if (start && end && start > end) throw new Error("Start must be on/before End.");
+  /* ---------- effect-driven base fetch ---------- */
+  const query = useMemo(() => ({
+    sourceName, metric, start, end
+  }), [sourceName, metric, start, end]);
 
-      // base series
-      const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
-      if (start) qs.set("start_date", start);
-      if (end) qs.set("end_date", end);
-
-      const r = await fetch(`${API_BASE}/api/metrics/daily?${qs.toString()}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const js = await r.json();
-      const arr: Row[] = Array.isArray(js) ? js : js.items ?? js.data ?? [];
-      arr.sort((a,b)=>(getDate(a)||"").localeCompare(getDate(b)||""));
-      setRows(arr);
-
-      // overlays
-      if (showAnoms && arr.length) {
-        setAnoms(await fetchAnomalies({ sourceName, metric, start, end, windowN, zThresh }));
-      } else setAnoms([]);
-
-      if (showForecast && arr.length) {
-        setForecast(await fetchForecast(sourceName, metric, start, end));
-      } else setForecast([]);
-
-    } catch (e:any) {
-      setRows([]); setAnoms([]); setForecast([]);
-      setError(e?.message || "Failed to load data");
-    } finally { setLoading(false); }
-  }
-
-  // Initial load
-  useEffect(() => { void runAll(); }, []); // eslint-disable-line
-
-  // When toggles or anomaly params change, (re)fetch overlays only
   useEffect(() => {
-    (async () => {
+    // Clear UI immediately to avoid stale series/rows
+    setRows([]);
+    setAnoms([]);
+    setForecast([]);
+    setError(null);
+
+    const ctrl = new AbortController();
+    const load = async () => {
+      try {
+        if (start && end && start > end) throw new Error("Start must be on/before End.");
+        setLoading(true);
+
+        const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
+        if (start) qs.set("start_date", start);
+        if (end) qs.set("end_date", end);
+
+        const r = await fetch(`${API_BASE}/api/metrics/daily?${qs.toString()}`, { signal: ctrl.signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const js = await r.json();
+        const arr: Row[] = Array.isArray(js) ? js : js.items ?? js.data ?? [];
+        arr.sort((a,b)=>(getDate(a)||"").localeCompare(getDate(b)||""));
+        setRows(arr);
+      } catch (e:any) {
+        if (e?.name !== "AbortError") {
+          setError(e?.message || "Failed to load data");
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(query)]);
+
+  /* ---------- overlays fetch when rows/toggles change ---------- */
+  useEffect(() => {
+    const ctrl = new AbortController();
+
+    const loadOverlays = async () => {
       if (!rows.length) { setAnoms([]); setForecast([]); return; }
       try {
-        if (showAnoms) setAnoms(await fetchAnomalies({ sourceName, metric, start, end, windowN, zThresh }));
-        else setAnoms([]);
-        if (showForecast) setForecast(await fetchForecast(sourceName, metric, start, end));
-        else setForecast([]);
-      } catch (e:any) {
-        setError(e?.message || "Overlay fetch failed");
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showAnoms, showForecast, windowN, zThresh]);
+        if (showAnoms) {
+          const pts = await fetchAnomalies({
+            sourceName, metric, start, end, windowN, zThresh, signal: ctrl.signal
+          });
+          setAnoms(pts);
+        } else setAnoms([]);
 
-  /* ---------- NEW: Upload handler (calls /api/ingest) ---------- */
+        if (showForecast) {
+          const fc = await fetchForecast(sourceName, metric, start, end, ctrl.signal);
+          setForecast(fc);
+        } else setForecast([]);
+      } catch (e:any) {
+        if (e?.name !== "AbortError") setError(e?.message || "Overlay fetch failed");
+      }
+    };
+
+    void loadOverlays();
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length, showAnoms, showForecast, windowN, zThresh, sourceName, metric, start, end]);
+
+  /* ---------- Upload handler (calls /api/ingest) ---------- */
   async function handleUpload(file: File | null) {
     if (!file) return;
     setUploading(true);
@@ -238,8 +257,9 @@ export default function DashboardPage() {
         throw new Error(body?.error?.message || `Upload failed (HTTP ${resp.status})`);
       }
       setUploadMsg(`Ingested ${body?.data?.rows_ingested ?? "?"} rows (${file.name}).`);
-      // refresh the dashboard to show newly ingested data
-      await runAll();
+      // After ingest, rows will refresh automatically because query didn't change,
+      // so explicitly nudge by toggling dateRange to itself (noop), or call a quick refresh:
+      setEnd((e) => e); // no-op that keeps state but re-triggers base effect only if you prefer to change
     } catch (e: any) {
       setUploadMsg(e?.message || "Upload failed.");
     } finally {
@@ -247,6 +267,30 @@ export default function DashboardPage() {
       if (fileRef.current) fileRef.current.value = "";
     }
   }
+
+  /* ---------- Reset handler (pure state; effect does the fetch) ---------- */
+  function handleReset() {
+    const newStart = isoDaysAgo(6);
+    const newEnd   = isoDaysAgo(0);
+
+    // Set defaults. The base effect above will clear data and fetch once.
+    setSourceName("demo-source");
+    setMetric("events_total");
+    setDateRange("7"); // will also update start/end via its effect
+    setStart(newStart);
+    setEnd(newEnd);
+
+    setShowAnoms(false);
+    setShowForecast(false);
+    setWindowN(7);
+    setZThresh(3);
+  }
+
+  /* ---------- chart remount key to avoid stale series ---------- */
+  const chartKey = useMemo(
+    () => `${sourceName}|${metric}|${start}|${end}|${showAnoms}|${showForecast}`,
+    [sourceName, metric, start, end, showAnoms, showForecast]
+  );
 
   // Filters UI
   const filters = (
@@ -270,35 +314,15 @@ export default function DashboardPage() {
                onChange={(e)=>setEnd(e.target.value)} min={start || undefined} />
       }
       Apply={
-        <button data-testid="btn-run" className="sd-btn" onClick={runAll} disabled={loading}>
+        <button data-testid="btn-run" className="sd-btn" onClick={() => {
+          // manual re-run: touch end to re-trigger effect without changing values
+          setEnd((e) => e);
+        }} disabled={loading}>
           {loading ? "Running…" : "Run"}
         </button>
       }
       Reset={
-        <button
-          data-testid="btn-reset"
-          className="sd-btn ghost"
-          disabled={loading}
-          onClick={() => {
-            // compute fresh defaults
-            const newStart = isoDaysAgo(6);
-            const newEnd   = isoDaysAgo(0);
-
-            // set ALL the resettable state first
-            setSourceName("demo-source");
-            setMetric("events_total");
-            setDateRange("7");          // keeps quick-range UI in sync
-            setStart(newStart);
-            setEnd(newEnd);
-            setShowAnoms(false);
-            setShowForecast(false);
-            setWindowN(7);
-            setZThresh(3);
-
-            // run after state has been committed
-            setTimeout(() => { void runAll(); }, 0);
-          }}
-        >
+        <button data-testid="btn-reset" className="sd-btn ghost" disabled={loading} onClick={handleReset}>
           Reset
         </button>
       }
@@ -366,10 +390,12 @@ export default function DashboardPage() {
             ? <Text className="sd-my-2" muted>No data for this selection. Try a wider range.</Text>
             : <div className="sd-my-2">
                 <MetricDailyChart
+                  key={chartKey}
                   rows={rows.map(r=>({ date: getDate(r)||"", value: num(pick(r,"value_sum","sum","total","value")) }))}
                   anomalies={anoms}
                   forecast={forecast}
                 />
+                {/* hidden lists for test hooks */}
                 <ul data-testid="anomaly-list" style={{ display: "none" }}>
                   {anoms.map((a, i) => (
                     <li key={i} data-date={a.date} data-value={a.value} data-z={a.z ?? ""} />

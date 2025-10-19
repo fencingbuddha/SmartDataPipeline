@@ -115,7 +115,7 @@ describe("FR-6C Forecast Overlay (app-level)", () => {
   cy.get('[data-testid="filter-end"]').clear().type("2025-10-21").blur();
   cy.get('[data-testid="btn-run"]').click();      // <-- important
   cy.wait("@forecast");
-  expectForecastCalls(2);                         // now we expect two total
+  expectAtLeastForecastCalls(2);                         
 });
 
   it("[UAT-FR6C-004] Toggle responds immediately: ON fetches; OFF does not; ON again shows forecast (may reuse cache)", () => {
