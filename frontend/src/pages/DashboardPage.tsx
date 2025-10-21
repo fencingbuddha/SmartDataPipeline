@@ -8,7 +8,7 @@ import MetricDailyTableView from "../components/dashboard/MetricDailyTableView";
 import { Text } from "../ui";
 
 /* ---------- config ---------- */
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+const API_BASE = "";
 
 /* ---------- types ---------- */
 type Row = {
@@ -236,30 +236,44 @@ export default function DashboardPage() {
     setUploading(true);
     setUploadMsg(null);
     try {
-      const ct = (file.type || "").toLowerCase();
-      if (!ct.includes("csv")) {
-        setUploading(false);
-        setUploadMsg("Only CSV is supported from the button for now.");
-        return;
-      }
+      const isJson = file.type?.toLowerCase().includes("json") || file.name.endsWith(".json");
+      const contentType = isJson ? "application/json" : "text/csv";
+      const body = await file.text();
+        await fetch(`/api/ingest?source_name=${encodeURIComponent(sourceName)}&default_metric=${encodeURIComponent(metric)}`, {
+          method: "POST",
+          headers: { "Content-Type": "text/csv" },
+          body,
+        });
+
       const qs = new URLSearchParams({
         source_name: String(sourceName || "demo-source"),
         default_metric: String(metric || "events_total"),
       });
-      const form = new FormData();
-      form.append("file", file, file.name);
+
       const resp = await fetch(`${API_BASE}/api/ingest?${qs.toString()}`, {
         method: "POST",
-        body: form,
+        headers: { "Content-Type": contentType },
+        body,
       });
-      const body = await resp.json().catch(() => ({}));
-      if (!resp.ok || body?.ok === false) {
-        throw new Error(body?.error?.message || `Upload failed (HTTP ${resp.status})`);
+
+      const js = await resp.json().catch(() => ({}));
+      if (!resp.ok || js?.ok === false) {
+        throw new Error(js?.error?.message || `Upload failed (HTTP ${resp.status})`);
       }
-      setUploadMsg(`Ingested ${body?.data?.rows_ingested ?? "?"} rows (${file.name}).`);
-      // After ingest, rows will refresh automatically because query didn't change,
-      // so explicitly nudge by toggling dateRange to itself (noop), or call a quick refresh:
-      setEnd((e) => e); // no-op that keeps state but re-triggers base effect only if you prefer to change
+
+      // Optionally kick KPI recompute (harmless if backend already did it)
+      await fetch(`${API_BASE}/api/kpi/run?source_name=${encodeURIComponent(sourceName)}&metric=${encodeURIComponent(metric)}`, {
+        method: "POST",
+      }).catch(() => {});
+
+      setUploadMsg(
+        `Ingested ${js?.data?.ingested_rows ?? js?.ingested_rows ?? "?"} rows` +
+        (js?.duplicates ? `, ${js.duplicates} duplicates` : "") +
+        ` (${file.name}).`
+      );
+
+      // Nudge base effect to re-fetch without changing filters
+      setEnd(e => e);
     } catch (e: any) {
       setUploadMsg(e?.message || "Upload failed.");
     } finally {

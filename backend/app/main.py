@@ -16,12 +16,18 @@ from app.routers.metrics import router as metrics_router
 
 app = FastAPI(title="Smart Data Pipeline", version="0.7.0")
 
+DEV_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=DEV_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=86400
 )
 
 # Routers are mounted at import time

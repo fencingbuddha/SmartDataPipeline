@@ -3,7 +3,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from collections import defaultdict
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
-from app.models import CleanEvent, MetricDaily
+from app.models import CleanEvent, MetricDaily, Source
+from typing import Optional, Tuple, Dict, Any
 
 def _utc_floor(d: date) -> datetime:
     return datetime.combine(d, time(0, 0, 0, tzinfo=timezone.utc))
@@ -227,3 +228,94 @@ def run_daily_kpis(
 
     db.commit()
     return upserted, preview
+
+def _resolve_source_id(db: Session, source_name: str) -> Optional[int]:
+    return (
+        db.query(Source.id)
+          .filter(Source.name == source_name)
+          .scalar()
+    )
+
+def _min_max_ts_for_metric(
+    db: Session,
+    source_id: int,
+    metric: str,
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    q = (
+        db.query(sa.func.min(CleanEvent.ts), sa.func.max(CleanEvent.ts))
+          .filter(CleanEvent.source_id == source_id, CleanEvent.metric == metric)
+    )
+    return q.one()
+
+def run_kpi_for_metric(
+    db: Session,
+    *,
+    source_name: str,
+    metric: str,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    distinct_field: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Recompute MetricDaily rows for the given (source_name, metric) over [start, end].
+    If start/end are not provided, it auto-detects the min/max days present
+    in CleanEvent for that (source, metric) only.
+
+    Returns:
+      {
+        "upserted": <int>,
+        "metric": "<metric>",
+        "source_name": "<source_name>",
+        "start": "YYYY-MM-DD" | None,
+        "end": "YYYY-MM-DD" | None,
+        "preview": [ { metric_date, source_id, metric, value_sum, ... }, ... ]
+      }
+    """
+    sid = _resolve_source_id(db, source_name)
+    if sid is None:
+        return {
+            "upserted": 0,
+            "metric": metric,
+            "source_name": source_name,
+            "start": None,
+            "end": None,
+            "preview": [],
+            "message": f"Source '{source_name}' not found; nothing to compute.",
+        }
+
+    # If no explicit window, derive it from just this (source, metric)
+    if start is None or end is None:
+        mints, maxts = _min_max_ts_for_metric(db, sid, metric)
+        if not mints or not maxts:
+            return {
+                "upserted": 0,
+                "metric": metric,
+                "source_name": source_name,
+                "start": None,
+                "end": None,
+                "preview": [],
+                "message": "No CleanEvent rows found for the given metric/source.",
+            }
+        if start is None:
+            start = mints.date()
+        if end is None:
+            end = maxts.date()
+
+    # Delegate to your existing daily aggregator (handles both PG and SQLite)
+    upserted, preview = run_daily_kpis(
+        db=db,
+        start=start,
+        end=end,
+        metric_name=metric,
+        source_id=sid,
+        distinct_field=distinct_field,
+    )
+
+    return {
+        "upserted": upserted,
+        "metric": metric,
+        "source_name": source_name,
+        "start": start.isoformat() if start else None,
+        "end": end.isoformat() if end else None,
+        "preview": preview,  # already normalized in run_daily_kpis
+    }
