@@ -1,14 +1,18 @@
 # backend/app/routers/upload.py
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Optional
-import uuid
+from datetime import datetime, timezone
+from uuid import uuid4
 
-from fastapi import APIRouter, File, UploadFile, Query
+from fastapi import APIRouter, Depends, Query, Request, UploadFile, File
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
+from app.db.session import get_db
 from app.schemas.common import ok, fail, ResponseMeta
+from app.services.ingestion import process_rows, iter_csv_bytes
+from app.services.kpi import run_kpi_for_metric
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
@@ -20,110 +24,98 @@ def _meta(**params) -> ResponseMeta:
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 
-CSV_MIME = {
-    "text/csv",
-    "application/csv",
-    "application/vnd.ms-excel",
-}
-JSON_MIME = {
-    "application/json",
-    "text/json",
-    "application/ld+json",
-}
-NDJSON_MIME = {
-    "application/x-ndjson",
-    "application/ndjson",
-    "application/json-seq",
-}
-
-def _infer_kind(filename: str | None, content_type: str | None, sample: bytes) -> str:
-    """
-    Returns 'csv' | 'json' | 'ndjson' (defaults to 'csv' for compatibility).
-    """
-    ct = (content_type or "").lower()
-    name = (filename or "").lower()
-
-    if ct in CSV_MIME:   return "csv"
-    if ct in JSON_MIME:  return "json"
-    if ct in NDJSON_MIME:return "ndjson"
-
-    if name.endswith(".csv"):    return "csv"
-    if name.endswith(".json"):   return "json"
-    if name.endswith(".ndjson"): return "ndjson"
-
-    first = sample.lstrip()[:1]
-    if first in (b"[", b"{"):    return "json"
-    if b"\n" in sample:
-        first_line = sample.splitlines()[0].strip()
-        if first_line.startswith(b"{") and first_line.endswith(b"}"):
-            return "ndjson"
-
-    return "csv"
-
 
 @router.post("")
 async def upload_csv(
-    file: UploadFile = File(...),
-    source_name: Optional[str] = Query(None),
+    request: Request,
+    source_name: Optional[str] = Query(None, description="Logical source name for these events"),
+    default_metric: str = Query("events_total", description="Metric used if CSV rows omit 'metric'"),
+    file: UploadFile = File(..., description="CSV file upload"),
+    db: Session = Depends(get_db),
 ):
     """
-    Accept CSV, JSON array, or NDJSON upload and return a staging handle.
-    Rules:
-      - CSV with header only (no data rows) => 200 OK
-      - All other successful uploads       => 201 Created
+    Legacy CSV upload endpoint.
+
+    Behavior:
+    - Only CSV is accepted.
+    - Always records non-null filename/content_type for raw_events.
+    - If the CSV has only a header row (no data), returns 200 with a lightweight
+      staging payload containing a `staging_id` and empty `metrics`, without writing anything.
     """
-    if file is None:
+    file_ct = (file.content_type or "").lower()
+    if file_ct not in {"text/csv", "application/csv", "application/vnd.ms-excel"}:
         return fail(
-            code="BAD_REQUEST",
-            message="No file provided.",
+            code="UNSUPPORTED_MEDIA_TYPE",
+            message=f"Upload expects CSV; got {file_ct or 'unknown'}.",
+            status_code=415,
+            meta=_meta(),
+        )
+
+    raw_bytes = await file.read()
+    if not raw_bytes or not raw_bytes.strip():
+        return fail(
+            code="EMPTY_FILE",
+            message="CSV file is empty.",
             status_code=400,
             meta=_meta(),
         )
 
-    # Read some bytes for sniffing + full payload for simple checks
-    head = await file.read(2048)
-    rest = await file.read()
-    data = head + rest
+    # Build rows iterator from bytes (skips blank lines, tolerant)
+    rows_iter = iter_csv_bytes(raw_bytes)
 
-    if not data:
-        return fail(
-            code="EMPTY_FILE",
-            message="Uploaded file is empty.",
-            status_code=400,
-            meta=_meta(filename=file.filename, source_name=source_name),
+    eff_source = source_name or "default"
+    safe_filename = (getattr(file, "filename", None) or "upload.csv")
+    safe_content_type = (file_ct or "text/csv")
+
+    # Process + store
+    stats = process_rows(
+        rows_iter,
+        source_name=eff_source,
+        default_metric=default_metric,
+        db=db,
+        filename=safe_filename,
+        content_type=safe_content_type,
+    )
+
+    # Special case: header-only CSV (no valid or invalid rows parsed)
+    if (stats.get("ingested_rows", 0) == 0) and (stats.get("skipped_rows", 0) == 0):
+        staging = {
+            "staging_id": str(uuid4()),
+            "metrics": [],
+        }
+        resp = ok(
+            data=staging,
+            meta=_meta(source_name=eff_source, filename=safe_filename),
         )
+        if isinstance(resp, JSONResponse):
+            resp.status_code = 200
+        return resp
 
-    kind = _infer_kind(file.filename, file.content_type, head)
-    if kind not in {"csv", "json", "ndjson"}:
-        return fail(
-            code="UNSUPPORTED_MEDIA_TYPE",
-            message=f"Unsupported content-type or format: {file.content_type or 'unknown'}",
-            status_code=415,
-            meta=_meta(filename=file.filename, source_name=source_name),
-        )
-
-    # Decide status code: special case for header-only CSV => 200
-    status_code = 201
-    if kind == "csv":
-        # Treat as UTF-8 with BOM tolerance; ignore undecodable bytes
-        text = data.decode("utf-8-sig", errors="replace")
-        non_empty_lines = [ln for ln in text.splitlines() if ln.strip() != ""]
-        # If there are 0 lines, earlier "empty" would have caught it.
-        # If there is exactly 1 non-empty line (header only), return 200.
-        if len(non_empty_lines) == 1:
-            status_code = 200
-
-    staging_id = f"stg_{uuid.uuid4().hex[:8]}"
+    # Non-fatal KPI recompute after real ingestion
+    try:
+        metric = stats.get("metric") or default_metric
+        if metric:
+            run_kpi_for_metric(db, source_name=eff_source, metric=metric)
+    except Exception:
+        pass
 
     resp = ok(
         data={
-            "staging_id": staging_id,
-            "filename": file.filename,
-            "content_type": file.content_type,
-            "kind": kind,  # harmless extra for debugging/telemetry
+            "ingested_rows": stats["ingested_rows"],
+            "inserted": stats["ingested_rows"],  # legacy field some tests expect
+            "skipped_rows": stats["skipped_rows"],
+            "duplicates": stats["duplicates"],
+            "warnings": stats.get("warnings", []),
+            "metric": stats.get("metric"),
+            "metrics": stats.get("metrics", []),
+            "min_ts": stats.get("min_ts"),
+            "max_ts": stats.get("max_ts"),
         },
-        meta=_meta(filename=file.filename, source_name=source_name),
+        meta=_meta(
+            source_name=eff_source,
+            filename=safe_filename,
+        ),
     )
     if isinstance(resp, JSONResponse):
-        resp.status_code = status_code
+        resp.status_code = 200
     return resp
