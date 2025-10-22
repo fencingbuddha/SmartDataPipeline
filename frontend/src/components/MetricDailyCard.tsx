@@ -124,10 +124,16 @@ export default function MetricDailyCard() {
 
   const forecast = useMemo(
     () =>
-      (forecastRaw || []).map((p: any) => ({
-        date: String(p.target_date ?? p.metric_date ?? p.date ?? ""),
-        yhat: Number(p.yhat ?? 0),
-      })),
+      (forecastRaw || [])
+        .map((p: any) => ({
+          // ✅ prefer the new backend field
+          date: String(p.forecast_date ?? p.target_date ?? p.metric_date ?? p.date ?? ""),
+          yhat: Number(p.yhat ?? 0),
+          // (optional) keep the interval if you want to render a band later
+          yhatLo: p.yhat_lo ?? p.yhat_lower,
+          yhatHi: p.yhat_hi ?? p.yhat_upper,
+        }))
+        .filter((p: any) => !!p.date),
     [forecastRaw]
   );
 
@@ -328,11 +334,7 @@ export default function MetricDailyCard() {
     </div>
   );
 
-  const forecastMapped = (forecast ?? []).map((f: any) => ({
-    date: f.date ?? f.target_date,
-    yhat: Number(f.yhat),
-  }));
-  const forecastForChart = showForecast ? forecastMapped : [];
+  const forecastForChart = showForecast ? forecast : [];
 
   const ChartSection = rows.length > 0 ? (
     <div className="sd-my-4" aria-busy={anyLoading} style={{ position: "relative" }}>

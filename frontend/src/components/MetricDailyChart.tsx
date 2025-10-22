@@ -11,15 +11,13 @@ import {
 } from "recharts";
 
 type Point = { date: string; value: number };
-type ForecastPoint = { date: string; yhat: number };
+type ForecastPoint = { date: string; yhat: number; yhatLo?: number; yhatHi?: number };
 type Anomaly = { date: string; value: number; z?: number };
 
-type MergedPoint = {
-  date: string;
-  value?: number;
-  yhat?: number;
-  __anom?: boolean;
-};
+function toTS(d: string): number | null {
+  const t = Date.parse(d);
+  return Number.isFinite(t) ? t : null;
+}
 
 export default function MetricDailyChart({
   rows,
@@ -34,70 +32,113 @@ export default function MetricDailyChart({
   height?: number;
   yLabel?: string;
 }) {
-  const data: MergedPoint[] = useMemo(() => {
-    const map = new Map<string, MergedPoint>();
-    for (const r of rows ?? []) map.set(r.date, { date: r.date, value: r.value, __anom: false });
-    for (const f of forecast ?? []) {
-      const prev = map.get(f.date) ?? { date: f.date, __anom: false };
-      prev.yhat = f.yhat;
-      map.set(f.date, prev);
-    }
-    const anomDates = new Set((anomalies ?? []).map(a => a.date));
-    const merged = Array.from(map.values()).map(d => ({ ...d, __anom: d.__anom || anomDates.has(d.date) }));
-    merged.sort((a, b) => a.date.localeCompare(b.date));
-    return merged;
-  }, [rows, forecast, anomalies]);
+  // Normalize + timestamp both series
+  const actualWithTs = useMemo(
+    () =>
+      (rows ?? [])
+        .map((r) => ({ ...r, ts: toTS(r.date) }))
+        .filter((r) => r.ts !== null) as Array<Point & { ts: number }>,
+    [rows]
+  );
 
-  const fmtDate = (d: string) =>
-    new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const forecastWithTs = useMemo(
+    () =>
+      (forecast ?? [])
+        .map((f: any) => {
+          const date =
+            String(f.date ?? f.forecast_date ?? f.target_date ?? f.metric_date ?? "");
+          return {
+            date,
+            yhat: Number(f.yhat ?? f.value ?? f.y ?? NaN),
+            yhatLo: f.yhat_lo ?? f.yhat_lower,
+            yhatHi: f.yhat_hi ?? f.yhat_upper,
+            ts: toTS(date),
+          };
+        })
+        .filter((f) => f.ts !== null && Number.isFinite(f.yhat)) as Array<
+        ForecastPoint & { ts: number }
+      >,
+    [forecast]
+  );
 
-  const hasForecast = Array.isArray(forecast) && forecast.length > 0;
+  // Build a union X-domain from timestamps so future points render in the right place
+  const xDomainData = useMemo(() => {
+    const set = new Set<number>();
+    for (const r of actualWithTs) set.add(r.ts);
+    for (const f of forecastWithTs) set.add(f.ts);
+    return Array.from(set)
+      .sort((a, b) => a - b)
+      .map((ts) => ({ ts }));
+  }, [actualWithTs, forecastWithTs]);
 
-  // Disable Recharts animations so the line renders fully on first paint
+  const anomTS = useMemo(
+    () => new Set((anomalies ?? []).map((a) => toTS(a.date)!).filter((t) => t !== null)),
+    [anomalies]
+  );
+
+  const fmtDate = (t: number) =>
+    new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
   const NO_ANIM = { isAnimationActive: false, animationDuration: 0 } as const;
 
   return (
     <div data-testid="chart" style={{ position: "relative", width: "100%", height }}>
       <ResponsiveContainer>
-        <LineChart data={data}>
+        {/* Use numeric time scale for perfect alignment */}
+        <LineChart data={xDomainData}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="date" tickFormatter={fmtDate} minTickGap={24} />
+          <XAxis
+            dataKey="ts"
+            type="number"
+            domain={["dataMin", "dataMax"]}
+            tickFormatter={fmtDate}
+            minTickGap={24}
+          />
           <YAxis label={{ value: yLabel, angle: -90, position: "insideLeft" }} />
           <Tooltip
-            labelFormatter={fmtDate}
+            labelFormatter={(t) => fmtDate(Number(t))}
             formatter={(v: any, n: string) => [v, n === "value" ? "Actual" : n === "yhat" ? "Forecast" : n]}
           />
 
-          {/* Actual series — animation OFF */}
+          {/* Actuals */}
           <Line
             {...NO_ANIM}
-            type="monotone"
-            dataKey="value"
             name="Actual"
+            type="monotone"
+            data={actualWithTs}
+            dataKey="value"
+            xAxisId={0}
+            key="ts"
             strokeWidth={2}
             connectNulls
             activeDot={false}
-            // static dot: only render anomaly points (no animation)
             dot={({ cx, cy, payload }: any) =>
-              payload?.__anom ? <circle cx={cx} cy={cy} r={4} fill="#dc2626" /> : <g />
+              payload?.ts && anomTS.has(payload.ts) ? (
+                <circle cx={cx} cy={cy} r={4} fill="#dc2626" />
+              ) : (
+                <g />
+              )
             }
           />
 
-          {/* Forecast series — animation OFF */}
-          {hasForecast ? (
+          {/* Forecast (dashed) */}
+          {forecastWithTs.length > 0 && (
             <Layer>
               <Line
                 {...NO_ANIM}
-                type="monotone"
-                dataKey="yhat"
                 name="Forecast"
-                strokeWidth={2}
-                strokeDasharray="4 4"
+                type="monotone"
+                data={forecastWithTs}
+                dataKey="yhat"
+                xAxisId={0}
+                key="ts"
+                strokeDasharray="6 4"
                 dot={false}
                 connectNulls
+                strokeOpacity={0.95}
               />
             </Layer>
-          ) : null}
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>

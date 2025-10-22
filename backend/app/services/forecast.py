@@ -1,3 +1,5 @@
+# app/services/forecast.py
+
 from datetime import date, timedelta
 import numpy as np
 import pandas as pd
@@ -25,48 +27,47 @@ def fetch_metric_series(db: Session, source_name: str, metric: str, start: date|
     return s
 
 def train_sarimax_and_forecast(
-    series: pd.Series,
-    horizon_days: int = 7,
-    order=(1, 1, 1),
-    seasonal_order=(0, 0, 0, 0),
-):
-    # Handle empty or all-zero history safely
-    if series.empty or float(series.sum()) == 0.0:
-        # If empty, anchor from "tomorrow" in UTC; if not empty, anchor from last date + 1
-        anchor = (
-            pd.Timestamp.utcnow().normalize()
-            if series.empty
-            else series.index.max()
-        ) + pd.Timedelta(days=1)
+        series: pd.Series,
+        horizon_days: int = 7,
+        order=(1, 1, 1),
+        seasonal_order=(0, 0, 0, 0),
+    ):
+        # Handle empty or all-zero history safely
+        if series.empty or float(series.sum()) == 0.0:
+            anchor = (pd.Timestamp.utcnow().normalize() if series.empty else series.index.max()) + pd.Timedelta(days=1)
+            idx = pd.date_range(anchor, periods=horizon_days, freq="D")
+            return pd.DataFrame(
+                {"yhat": np.zeros(horizon_days), "yhat_lower": np.zeros(horizon_days), "yhat_upper": np.zeros(horizon_days)},
+                index=idx,
+            )
 
-        idx = pd.date_range(anchor, periods=horizon_days, freq="D")
-        return pd.DataFrame(
+        last_obs = series.index.max().normalize()  # << anchor from last observed day
+
+        model = SARIMAX(
+            series,
+            order=order,
+            seasonal_order=seasonal_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+        fit = model.fit(disp=False)
+        fcst = fit.get_forecast(steps=horizon_days)
+
+        # Build our own strictly-future index to avoid any in-sample leakage
+        idx = pd.date_range(last_obs + pd.Timedelta(days=1), periods=horizon_days, freq="D")
+
+        ci = fcst.conf_int()
+        df = pd.DataFrame(
             {
-                "yhat": np.zeros(horizon_days),
-                "yhat_lower": np.zeros(horizon_days),
-                "yhat_upper": np.zeros(horizon_days),
+                "yhat": fcst.predicted_mean.to_numpy(),
+                "yhat_lower": ci.iloc[:, 0].to_numpy(),
+                "yhat_upper": ci.iloc[:, 1].to_numpy(),
             },
             index=idx,
         )
-
-    model = SARIMAX(
-        series,
-        order=order,
-        seasonal_order=seasonal_order,
-        enforce_stationarity=False,
-        enforce_invertibility=False,
-    )
-    fit = model.fit(disp=False)
-    fcst = fit.get_forecast(steps=horizon_days)
-    df = pd.DataFrame(
-        {
-            "yhat": fcst.predicted_mean,
-            "yhat_lower": fcst.conf_int().iloc[:, 0],
-            "yhat_upper": fcst.conf_int().iloc[:, 1],
-        },
-        index=fcst.row_labels,
-    )
-    return df
+        # Guard against NaNs from CI on small samples
+        df = df.fillna(method="ffill").fillna(0.0)
+        return df
 
 
 def write_forecast(db: Session, source_id: int, metric: str, df: pd.DataFrame, model_version: str = "sarimax-0.1"):
