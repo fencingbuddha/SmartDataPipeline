@@ -85,27 +85,44 @@ async function fetchAnomalies(params: {
 }
 
 const FC_CACHE = new Map<string, ForecastPoint[]>();
-async function fetchForecast(sourceName: string, metric: string, start?: string, end?: string, signal?: AbortSignal): Promise<ForecastPoint[]> {
-  const key = `fc:${sourceName}:${metric}:${start}:${end}`;
-  if (FC_CACHE.has(key)) return FC_CACHE.get(key)!;
+  async function fetchForecast(
+    sourceName: string,
+    metric: string,
+    start?: string,
+    end?: string,
+    signal?: AbortSignal,
+    horizon?: number  // <— NEW
+  ): Promise<ForecastPoint[]> {
+    const key = `fc:${sourceName}:${metric}:${start}:${end}:${horizon ?? "n"}`;
+    if (FC_CACHE.has(key)) return FC_CACHE.get(key)!;
 
-  const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
-  if (start) qs.set("start_date", start);
-  if (end) qs.set("end_date", end);
-  const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`, { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const qs = new URLSearchParams({ source_name: String(sourceName), metric: String(metric) });
 
-  const js: any = await r.json();
-  const raw: any[] = Array.isArray(js) ? js : js.data ?? js.points ?? js?.data?.points ?? [];
-  const fc = raw
-    .map((row: any) => ({
-      date: String(row.metric_date ?? row.date ?? row.ts ?? ""),
-      yhat: Number(row.yhat ?? row.y_pred ?? row.prediction ?? row.value ?? row.y ?? 0),
-    }))
-    .filter(p => p.date && Number.isFinite(p.yhat));
-  FC_CACHE.set(key, fc);
-  return fc;
-}
+    // Prefer horizon (so we get 7 points), otherwise legacy start/end
+    if (horizon && horizon > 0) {
+      qs.set("horizon", String(Math.min(30, Math.max(1, horizon))));
+    } else {
+      if (start) qs.set("start_date", start);
+      if (end) qs.set("end_date", end);
+    }
+
+    const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`, { signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+    const js: any = await r.json();
+    const raw: any[] = Array.isArray(js) ? js : js.data ?? js.points ?? js?.data?.points ?? [];
+
+    const fc: ForecastPoint[] = raw
+      .map((row: any) => ({
+        // read the new key first
+        date: String(row.forecast_date ?? row.target_date ?? row.metric_date ?? row.date ?? row.ts ?? ""),
+        yhat: Number(row.yhat ?? row.y_pred ?? row.prediction ?? row.value ?? row.y ?? NaN),
+      }))
+      .filter((p) => p.date && Number.isFinite(p.yhat));
+
+    FC_CACHE.set(key, fc);
+    return fc;
+  }
 
 /* ---------- page ---------- */
 export default function DashboardPage() {
@@ -217,9 +234,12 @@ export default function DashboardPage() {
         } else setAnoms([]);
 
         if (showForecast) {
-          const fc = await fetchForecast(sourceName, metric, start, end, ctrl.signal);
-          setForecast(fc);
-        } else setForecast([]);
+          const H = 7;
+          const fc = await fetchForecast(sourceName, metric, undefined, undefined, ctrl.signal, H);
+            setForecast(fc);
+          } else {
+            setForecast([]);
+          }
       } catch (e:any) {
         if (e?.name !== "AbortError") setError(e?.message || "Overlay fetch failed");
       }
