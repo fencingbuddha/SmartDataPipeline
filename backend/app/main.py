@@ -13,6 +13,7 @@ from app.routers.sources import router as sources_router
 from app.routers.forecast import router as forecast_router
 from app.routers.anomaly import router as anomaly_router
 from app.routers.metrics import router as metrics_router
+from app.routers.forecast import router as forecast_router
 
 app = FastAPI(title="Smart Data Pipeline", version="0.7.0")
 
@@ -37,5 +38,6 @@ app.include_router(kpi_router)
 app.include_router(ingest_router)
 app.include_router(sources_router)
 app.include_router(forecast_router)
-app.include_router(anomaly_router)    # /api/anomaly/*
-app.include_router(metrics_router)    # /api/metrics/*
+app.include_router(anomaly_router)
+app.include_router(metrics_router)
+app.include_router(forecast_router)

@@ -1,6 +1,8 @@
 # app/routers/forecast.py
 from __future__ import annotations
 
+from app.schemas.forecast_health import ForecastHealthOut
+
 """
 Forecast API (daily horizon)
 
@@ -21,7 +23,6 @@ from datetime import date, datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any
 
 import math
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import JSONResponse
@@ -32,7 +33,7 @@ from app.db.session import get_db
 from app.models.source import Source
 from app.models.metric_daily import MetricDaily
 from app.models.forecast_results import ForecastResults
-from app.services.forecast import run_forecast
+from app.services.forecast import run_forecast, upsert_forecast_health
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 
@@ -267,3 +268,19 @@ def forecast_run(
         raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
+@router.get("/health", response_model=ForecastHealthOut)
+def forecast_health(
+    source_name: str = Query(..., description="e.g., demo-source"),
+    metric: str = Query(..., description="e.g., events_total"),
+    window: int = Query(90, ge=14, le=365, description="training window (days)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Refresh health metadata and return { trained_at, window, mape }.
+    """
+    try:
+        fm = upsert_forecast_health(db, source_name=source_name, metric=metric, window_n=window)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return ForecastHealthOut(trained_at=fm.trained_at, window=fm.window_n, mape=fm.mape or 100.0)
