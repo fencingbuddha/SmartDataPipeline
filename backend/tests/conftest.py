@@ -15,7 +15,7 @@ TEST_DB_URL = os.getenv(
 )
 os.environ.setdefault("DATABASE_URL", TEST_DB_URL)
 
-# Import model modules so Base has all tables
+# Import model modules so Base has all tables (include forecast_model)
 for mod in (
     "app.models.source",
     "app.models.clean_event",
@@ -23,6 +23,7 @@ for mod in (
     "app.models.raw_upload",
     "app.models.raw_event",
     "app.models.forecast_results",
+    "app.models.forecast_model",  # <-- ensure forecast_models is in metadata
 ):
     try:
         importlib.import_module(mod)
@@ -39,6 +40,7 @@ import app.db.session as app_db_session
 app_db_session.engine = ENGINE
 app_db_session.SessionLocal = SessionLocal
 
+# Propagate testing SessionLocal/engine into app modules
 for m in list(sys.modules.values()):
     try:
         if getattr(m, "SessionLocal", None) is not None and m.__name__.startswith("app."):
@@ -50,6 +52,7 @@ for m in list(sys.modules.values()):
 
 from app.main import app
 
+# Override DB dependency
 try:
     from app.db.session import get_db
 
@@ -65,6 +68,7 @@ try:
 except Exception:
     pass
 
+# Ensure /api/metrics/daily exists for legacy tests
 try:
     from fastapi.routing import APIRoute
     import app.routers.metrics as metrics_router
@@ -90,35 +94,31 @@ except Exception:
     pass
 
 # --------------------------------------------------------------------------------------
-# NEW: Auto-unwrap envelope for success AND map enveloped errors to {"detail": "..."}
+# Auto-unwrap envelope in tests
 # --------------------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _auto_unwrap_envelope_in_tests(monkeypatch):
     """
     During tests:
       - 2xx responses:
-          {"success": true, "data": X}    -> return X from r.json()
-          {"success": true, "data": {"points":[...]}} -> return [...], legacy-friendly
+          {"success": true, "data": X} -> return X
+          {"success": true, "data": {"points":[...]}} -> return [...]
       - 4xx/5xx responses:
-          {"success": false, "error": {"message": "..."}} -> return {"detail": "..."}
-      - Already-default error bodies (with "detail") are left unchanged.
+          {"success": false, "error": {"message": "..."}} -> {"detail": "..."}
     """
     orig_json = httpx.Response.json
 
     def patched_json(self: httpx.Response, **kwargs):
         data = orig_json(self, **kwargs)
         try:
-            # Successful responses -> unwrap
             if isinstance(data, dict) and self.status_code < 400 and data.get("success") is True and "data" in data:
                 inner = data["data"]
                 if isinstance(inner, dict) and "points" in inner and set(inner.keys()) <= {"points", "anomalies"}:
                     return inner["points"]
                 return inner
-
-            # Error responses -> map enveloped errors to default FastAPI shape
             if self.status_code >= 400 and isinstance(data, dict):
                 if "detail" in data:
-                    return data  # already default
+                    return data
                 err = data.get("error")
                 if isinstance(err, dict):
                     msg = err.get("message") or "Error"
@@ -148,7 +148,6 @@ def _create_schema_once():
 
     yield
 
-
 @pytest.fixture()
 def db():
     s = SessionLocal()
@@ -158,6 +157,10 @@ def db():
     finally:
         s.close()
 
+# Alias so tests that expect `db_session` keep working
+@pytest.fixture()
+def db_session(db):
+    return db
 
 @pytest.fixture(autouse=True)
 def _per_test_clean():
@@ -168,7 +171,6 @@ def _per_test_clean():
             conn.execute(text("TRUNCATE TABLE " + ", ".join(names) + " RESTART IDENTITY CASCADE"))
     yield
 
-
 @pytest.fixture()
 def reset_db():
     with ENGINE.begin() as conn:
@@ -178,13 +180,6 @@ def reset_db():
         for col in ("value_sum", "value_avg", "value_count"):
             conn.execute(text(f"ALTER TABLE metric_daily ALTER COLUMN {col} DROP NOT NULL"))
     yield
-
-
-@pytest.fixture()
-def client():
-    from fastapi.testclient import TestClient
-    return TestClient(app)
-
 
 # -------------------- Seed data for forecasting tests --------------------
 from app.models.source import Source
@@ -216,6 +211,7 @@ def seeded_metric_daily(db):
     db.commit()
     return src.id
 
+# Single session-scoped TestClient
 @pytest.fixture(scope="session")
 def client():
     return TestClient(app)
