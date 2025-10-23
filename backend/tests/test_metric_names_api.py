@@ -61,3 +61,19 @@ def test_metric_names_scoped_by_source(db, reset_db):
             assert isinstance(body.get("error"), dict)
         else:
             assert "detail" in body
+
+def test_metrics_names_smoke(client):
+    r = client.get("/api/metrics/names")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, dict) or isinstance(data, list)
+
+# Test metrics names shapes
+def test_metrics_names_shape(client):
+    r = client.get("/api/metrics/names")
+    assert r.status_code == 200
+    payload = r.json()
+    data = payload if isinstance(payload, list) else payload.get("data", [])
+    assert isinstance(data, (list, dict))
+
+

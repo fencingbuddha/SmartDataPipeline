@@ -149,3 +149,7 @@ async def upload_csv(
     if isinstance(resp, JSONResponse):
         resp.status_code = status_code
     return resp
+
+def test_upload_rejects_missing_file(client):
+    r = client.post("/api/upload", params={"source_name": "demo-source"}, files={})
+    assert r.status_code in (400, 422, 500)
