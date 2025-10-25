@@ -5,7 +5,13 @@ from typing import Tuple, Iterable
 import numpy as np
 import pandas as pd
 from sqlalchemy import select, asc
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+try:
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+except (ImportError, OSError) as exc:  # pragma: no cover - platform-specific wheel issues
+    SARIMAX = None
+    _SARIMAX_IMPORT_ERROR = exc
+else:
+    _SARIMAX_IMPORT_ERROR = None
 from sqlalchemy.orm import Session
 from app.models.metric_daily import MetricDaily
 from app.models.source import Source
@@ -45,6 +51,18 @@ def train_sarimax_and_forecast(
             )
 
         last_obs = series.index.max().normalize()  # << anchor from last observed day
+
+        if SARIMAX is None:
+            # degrade gracefully when the optional statsmodels wheel is unavailable
+            idx = pd.date_range(last_obs + pd.Timedelta(days=1), periods=horizon_days, freq="D")
+            return pd.DataFrame(
+                {
+                    "yhat": np.full(horizon_days, float(series.iloc[-1])),
+                    "yhat_lower": np.zeros(horizon_days),
+                    "yhat_upper": np.zeros(horizon_days),
+                },
+                index=idx,
+            )
 
         model = SARIMAX(
             series,
