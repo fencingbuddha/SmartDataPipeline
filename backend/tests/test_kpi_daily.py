@@ -114,7 +114,13 @@ def test_daily_kpis_upsert_and_idempotent(db, reset_db):
 
     # verify persisted rows (normalize SQL result types)
     res = db.execute(sa.text("""
-        SELECT metric_date::text, source_id, metric, value_count, value_sum::float, value_avg::float
+        SELECT
+          CAST(metric_date AS TEXT)  AS metric_date,
+          source_id,
+          metric,
+          value_count,
+          CAST(value_sum AS REAL)    AS value_sum,
+          CAST(value_avg AS REAL)    AS value_avg
         FROM metric_daily
         ORDER BY metric_date, source_id, metric
     """)).all()

@@ -5,7 +5,7 @@ from datetime import datetime, timezone, date as Date
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -42,9 +42,9 @@ def run_kpi(
     - Upserts into metric_daily, replacing aggregates for the day/metric/source.
     - Returns rows_upserted plus a small summary.
     """
-    # If clean_events doesn't exist, no-op
-    reg = db.execute(text("SELECT to_regclass('clean_events')")).scalar()
-    if not reg:
+    # If clean_events doesn't exist, no-op (cross-dialect)
+    inspector = inspect(db.bind)
+    if not inspector.has_table("clean_events"):
         return ok(
             data={"rows_upserted": 0, "groups_upserted": 0, "metrics": [], "rows_aggregated": 0},
             meta=_meta(reason="no_clean_events_table"),
@@ -54,6 +54,19 @@ def run_kpi(
     params: Dict[str, Any] = {}
     where_sql = ["1=1"]
     join_sources = False
+
+    # Cross-dialect expressions
+    dialect_name = db.bind.dialect.name if db.bind is not None else "default"
+    if dialect_name == "sqlite":
+        date_expr = "DATE(clean_events.ts)"
+        sum_cast = "SUM(clean_events.value) AS value_sum"
+        count_cast = "COUNT(*) AS value_count"
+        null_int = "NULL AS value_distinct"
+    else:
+        date_expr = "(clean_events.ts AT TIME ZONE 'UTC')::date"
+        sum_cast = "SUM(clean_events.value)::float8 AS value_sum"
+        count_cast = "COUNT(*)::int AS value_count"
+        null_int = "NULL::int AS value_distinct"
 
     if source_name:
         join_sources = True
@@ -66,33 +79,33 @@ def run_kpi(
 
     # Date filters are inclusive on the DATE derived from ts at UTC
     if start_date:
-        where_sql.append("(clean_events.ts AT TIME ZONE 'UTC')::date >= :start_date")
+        where_sql.append(f"{date_expr} >= :start_date")
         params["start_date"] = start_date
     if end_date:
-        where_sql.append("(clean_events.ts AT TIME ZONE 'UTC')::date <= :end_date")
+        where_sql.append(f"{date_expr} <= :end_date")
         params["end_date"] = end_date
 
     # DISTINCT support: tests pass distinct_field='id', which should equal row count here
     if distinct_field == "id":
-        distinct_sql = ", COUNT(DISTINCT clean_events.id)::int AS value_distinct"
+        distinct_sql = ", COUNT(DISTINCT clean_events.id) AS value_distinct"
     else:
-        distinct_sql = ", NULL::int AS value_distinct"
+        distinct_sql = f", {null_int}"
 
     join_sql = "JOIN sources ON sources.id = clean_events.source_id" if join_sources else ""
 
     select_sql = text(
         f"""
         SELECT
-            (clean_events.ts AT TIME ZONE 'UTC')::date AS metric_date,
+            {date_expr} AS metric_date,
             clean_events.source_id,
             clean_events.metric,
-            SUM(clean_events.value)::float8 AS value_sum,
-            COUNT(*)::int AS value_count
+            {sum_cast},
+            {count_cast}
             {distinct_sql}
         FROM clean_events
         {join_sql}
         WHERE {" AND ".join(where_sql)}
-        GROUP BY (clean_events.ts AT TIME ZONE 'UTC')::date, clean_events.source_id, clean_events.metric
+        GROUP BY {date_expr}, clean_events.source_id, clean_events.metric
         """
     )
 
@@ -132,25 +145,30 @@ def run_kpi(
     total_rows = 0
 
     for r in rows:
+        md = r["metric_date"]
+        if isinstance(md, str):
+            from datetime import date
+            md = date.fromisoformat(md)
+
         db.execute(
             upsert,
             {
-                "metric_date": r["metric_date"],
+                "metric_date": md,
                 "source_id": r["source_id"],
                 "metric": r["metric"],
-                "value_sum": float(r["value_sum"]),
-                "value_count": int(r["value_count"]),
-                "value_distinct": int(r["value_distinct"]) if r["value_distinct"] is not None else None,
+                "value_sum": float(r["value_sum"]) if r["value_sum"] is not None else None,
+                "value_count": int(r["value_count"]) if r["value_count"] is not None else None,
+                "value_distinct": int(r["value_distinct"]) if r.get("value_distinct") is not None else None,
             },
         )
         groups_upserted += 1
         total_rows += int(r["value_count"])
         metrics.append(r["metric"])
 
-        if start_d is None or r["metric_date"] < start_d:
-            start_d = r["metric_date"]
-        if end_d is None or r["metric_date"] > end_d:
-            end_d = r["metric_date"]
+        if start_d is None or md < start_d:
+            start_d = md
+        if end_d is None or md > end_d:
+            end_d = md
 
     db.commit()
 
