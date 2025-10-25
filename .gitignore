@@ -1,32 +1,48 @@
-# dependencies
-node_modules/
-pnpm-lock.yaml
-package-lock.json
-yarn.lock
+# ---------- OS / Editor ----------
+.DS_Store
+**/.DS_Store
+.vscode/
+.idea/
 
-# build outputs
+# ---------- Python / Backend ----------
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/.env
+backend/.coverage
+backend/.coverage.*
+backend/htmlcov/
+backend/.pytest_cache/
+backend/.mypy_cache/
+
+# SQLite databases (generated data)
+data/*.db
+data/*.sqlite*
+backend/migrations/*.pyc
+
+# ---------- Node / Frontend ----------
 frontend/node_modules/
 frontend/.vite/
 frontend/dist/
-frontend/node_modules/
-frontend/.vite/
-frontend/dist/
+frontend/.env
+frontend/.env.*
+
+# Keep lockfiles under version control for reproducible installs:
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ---------- Cypress ----------
+cypress/screenshots/
+cypress/videos/
+cypress/downloads/
+
+# ---------- Generic build outputs ----------
 dist/
 build/
 
-# generated
-*.csv
-backend/.env
-frontend/.env
-
-# macOS cruft
-.DS_Store
-**/.DS_Store
-
-# env
-.env
-.env.*
-
-# cypress artifacts
-cypress/screenshots/
-cypress/videos/
+# ---------- Logs ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
