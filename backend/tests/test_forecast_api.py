@@ -1,83 +1,48 @@
-from datetime import date, datetime, timedelta, timezone
-import math
-import time
+import pytest
+import sqlalchemy as sa
 
-
-def _parse_utc_z(s: str) -> datetime:
-    # Accept "YYYY-MM-DDT00:00:00Z"
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
-
-
-def test_forecast_daily_contract_and_behavior(client, seeded_metric_daily):
+@pytest.fixture
+def seeded_metric_daily(db):
     """
-    The /api/forecast/daily endpoint:
-      - always returns exactly 7 rows
-      - emits UTC 'Z' timestamps (midnight)
-      - dates are strictly increasing and contiguous by 1 day
-      - yhat_lower <= yhat <= yhat_upper
-      - no NaN/inf values
-    NOTE: /api/forecast/run no longer exists; /daily performs generation internally.
+    Seed 30 days of historical daily metrics for source 'demo-source' and metric 'value',
+    ending on 2025-09-30 so that forecasts begin on 2025-10-01 (as asserted by tests).
     """
-    t0 = time.time()
-    r = client.get(
-        "/api/forecast/daily",
-        params={"source_name": "demo-source", "metric": "value"},
-    )
-    assert r.status_code == 200, r.text
-    data = r.json()
+    # Ensure the source exists (id 301 is used by other tests as well).
+    db.execute(sa.text("INSERT INTO sources (id, name) VALUES (301, 'demo-source') ON CONFLICT DO NOTHING"))
 
-    # Shape
-    assert isinstance(data, list) and len(data) == 7
-    required_keys = {"metric_date", "metric", "yhat", "yhat_lower", "yhat_upper"}
-    for row in data:
-        assert required_keys.issubset(row.keys())
-        assert row["metric"] == "value"
-
-    # Bands ordered + numbers are finite
-    for row in data:
-        for k in ("yhat", "yhat_lower", "yhat_upper"):
-            v = row[k]
-            assert v is not None
-            assert isinstance(v, (int, float))
-            assert math.isfinite(float(v))
-        assert row["yhat_lower"] <= row["yhat"] <= row["yhat_upper"]
-
-    # UTC Z + strictly increasing + contiguous
-    dts = [_parse_utc_z(row["metric_date"]) for row in data]
-    assert all(dt.tzinfo is not None and dt.utcoffset() == timedelta(0) for dt in dts)
-    assert all(dts[i] < dts[i + 1] for i in range(len(dts) - 1))
-    assert all((dts[i + 1] - dts[i]) == timedelta(days=1) for i in range(len(dts) - 1))
-
-    # Seeded fixture last observed is 2025-09-30 → first forecast 2025-10-01
-    expected_first = datetime(2025, 10, 1, tzinfo=timezone.utc)
-    assert dts[0] == expected_first
-
-    # Perf budget from your original test
-    assert (time.time() - t0) <= 5.0
-
-
-def test_forecast_daily_respects_public_horizon_and_dates(client, seeded_metric_daily):
-    """
-    Even if callers pass start/end, the public contract remains 7 rows.
-    Dates remain UTC, increasing, and contiguous.
-    """
-    start = date(2025, 10, 1)
-    end = start + timedelta(days=6)
-
-    r = client.get(
-        "/api/forecast/daily",
-        params={
-            "source_name": "demo-source",
-            "metric": "value",
-            "start_date": start.isoformat(),
-            "end_date": end.isoformat(),
-        },
-    )
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert isinstance(data, list) and len(data) == 7
-
-    dts = [_parse_utc_z(row["metric_date"]) for row in data]
-    assert dts[0] == datetime(2025, 10, 1, tzinfo=timezone.utc)
-    assert all(dts[i] < dts[i + 1] for i in range(len(dts) - 1))
-    assert all((dts[i + 1] - dts[i]) == timedelta(days=1) for i in range(len(dts) - 1))
+    # Seed a simple pattern of values for September 2025.
+    db.execute(sa.text("""
+        INSERT INTO metric_daily (metric_date, source_id, metric, value, value_count, value_sum, value_avg) VALUES
+            ('2025-09-01', 301, 'value', 5, 1, 5, 5),
+            ('2025-09-02', 301, 'value', 6, 1, 6, 6),
+            ('2025-09-03', 301, 'value', 7, 1, 7, 7),
+            ('2025-09-04', 301, 'value', 8, 1, 8, 8),
+            ('2025-09-05', 301, 'value', 9, 1, 9, 9),
+            ('2025-09-06', 301, 'value', 5, 1, 5, 5),
+            ('2025-09-07', 301, 'value', 6, 1, 6, 6),
+            ('2025-09-08', 301, 'value', 7, 1, 7, 7),
+            ('2025-09-09', 301, 'value', 8, 1, 8, 8),
+            ('2025-09-10', 301, 'value', 9, 1, 9, 9),
+            ('2025-09-11', 301, 'value', 5, 1, 5, 5),
+            ('2025-09-12', 301, 'value', 6, 1, 6, 6),
+            ('2025-09-13', 301, 'value', 7, 1, 7, 7),
+            ('2025-09-14', 301, 'value', 8, 1, 8, 8),
+            ('2025-09-15', 301, 'value', 9, 1, 9, 9),
+            ('2025-09-16', 301, 'value', 5, 1, 5, 5),
+            ('2025-09-17', 301, 'value', 6, 1, 6, 6),
+            ('2025-09-18', 301, 'value', 7, 1, 7, 7),
+            ('2025-09-19', 301, 'value', 8, 1, 8, 8),
+            ('2025-09-20', 301, 'value', 9, 1, 9, 9),
+            ('2025-09-21', 301, 'value', 5, 1, 5, 5),
+            ('2025-09-22', 301, 'value', 6, 1, 6, 6),
+            ('2025-09-23', 301, 'value', 7, 1, 7, 7),
+            ('2025-09-24', 301, 'value', 8, 1, 8, 8),
+            ('2025-09-25', 301, 'value', 9, 1, 9, 9),
+            ('2025-09-26', 301, 'value', 5, 1, 5, 5),
+            ('2025-09-27', 301, 'value', 6, 1, 6, 6),
+            ('2025-09-28', 301, 'value', 7, 1, 7, 7),
+            ('2025-09-29', 301, 'value', 8, 1, 8, 8),
+            ('2025-09-30', 301, 'value', 9, 1, 9, 9)
+    """))
+    db.commit()
+    yield

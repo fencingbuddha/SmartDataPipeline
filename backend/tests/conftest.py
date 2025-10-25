@@ -1,217 +1,323 @@
 import os
-import sys
-import importlib
-from datetime import date, timedelta
 import pytest
-import httpx
 from fastapi.testclient import TestClient
-
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test",
+# Ensure the application runs in test/sqlite mode *before* importing any app modules
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+
+# Import the DB session module first so we can patch it before the app is imported
+import app.db.session as app_db_session  # type: ignore
+
+# --- Use a single in-memory SQLite DB for the whole test session ---
+ENGINE = create_engine(
+    "sqlite://",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+    future=True,
 )
-os.environ.setdefault("DATABASE_URL", TEST_DB_URL)
+SessionTesting = sessionmaker(bind=ENGINE, autocommit=False, autoflush=False, future=True)
 
-# Import model modules so Base has all tables (include forecast_model)
-for mod in (
-    "app.models.source",
-    "app.models.clean_event",
-    "app.models.metric_daily",
-    "app.models.raw_upload",
-    "app.models.raw_event",
-    "app.models.forecast_results",
-    "app.models.forecast_model",  # <-- ensure forecast_models is in metadata
-):
-    try:
-        importlib.import_module(mod)
-    except Exception:
-        pass
+# --- Ensure tests and app code share the SAME in-memory engine/sessionmaker ---
+# Make sure any references inside app.db.session use this shared in-memory engine/sessionmaker
+setattr(app_db_session, "ENGINE", ENGINE)
+setattr(app_db_session, "engine", ENGINE)  # in case code uses lowercase name
+app_db_session.SessionLocal = SessionTesting
+app_db_session.get_engine = lambda: ENGINE            # type: ignore
+app_db_session.get_sessionmaker = lambda: SessionTesting  # type: ignore
 
-from app.db.base import Base
+# Also patch the package-level app.db for tests that import SessionLocal from app.db
+import app.db as app_db_pkg  # type: ignore
+setattr(app_db_pkg, "ENGINE", ENGINE)
+setattr(app_db_pkg, "engine", ENGINE)
+app_db_pkg.SessionLocal = SessionTesting
 
-# One engine/session for everything
-ENGINE = create_engine(TEST_DB_URL, future=True)
-SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
-
-import app.db.session as app_db_session
-app_db_session.engine = ENGINE
-app_db_session.SessionLocal = SessionLocal
-
-# Propagate testing SessionLocal/engine into app modules
-for m in list(sys.modules.values()):
-    try:
-        if getattr(m, "SessionLocal", None) is not None and m.__name__.startswith("app."):
-            setattr(m, "SessionLocal", SessionLocal)
-        if getattr(m, "engine", None) is not None and m.__name__.startswith("app."):
-            setattr(m, "engine", ENGINE)
-    except Exception:
-        pass
-
+from app.db.session import get_db
 from app.main import app
 
-# Override DB dependency
-try:
-    from app.db.session import get_db
+def _create_sqlite_test_schema(conn):
+    """Create the minimal tables our tests expect, using SQLite-compatible DDL."""
+    conn.execute(text("PRAGMA foreign_keys=ON"))
+    # sources table
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS sources (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR NOT NULL UNIQUE
+        )
+    """))
+    # raw_events table used by ingest pipeline to log receipts
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS raw_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            received_at DATETIME NOT NULL,
+            filename VARCHAR NOT NULL,
+            content_type VARCHAR NOT NULL,
+            payload TEXT NOT NULL,
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+    """))
+    # Helpful index for lookups by source/time
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_raw_events_source_received
+        ON raw_events (source_id, received_at)
+    """))
+    # clean_events table (subset of columns used in tests)
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS clean_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            ts DATETIME NOT NULL,
+            metric VARCHAR NOT NULL,
+            value NUMERIC NOT NULL,
+            flags TEXT DEFAULT '{}' NOT NULL,
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+    """))
+    # Helpful indexes for queries used in tests
+    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_clean_events_source_ts_metric ON clean_events (source_id, ts, metric)"))
+    # metric_daily table for aggregated KPI values used by tests
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS metric_daily (
+            metric_date DATE NOT NULL,
+            source_id INTEGER NOT NULL,
+            metric VARCHAR(64) NOT NULL,
+            -- single-value column used by some tests when seeding data
+            value NUMERIC,
+            -- aggregate columns used by the app/API
+            value_sum NUMERIC DEFAULT 0 NOT NULL,
+            value_avg NUMERIC DEFAULT 0 NOT NULL,
+            value_count INTEGER DEFAULT 0 NOT NULL,
+            value_distinct INTEGER,
+            PRIMARY KEY (metric_date, source_id, metric),
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+    """))
+    # Helpful index for date filtering
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_metric_daily_date ON metric_daily (metric_date)"))
 
-    def _get_db_override():
-        db = SessionLocal()
+    # forecast_results table for model outputs
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS forecast_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            metric VARCHAR NOT NULL,
+            target_date DATE NOT NULL,
+            yhat NUMERIC NOT NULL,
+            yhat_lower NUMERIC,
+            yhat_upper NUMERIC,
+            model_version VARCHAR,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+    """))
+    # Ensure idempotent upsert behavior in SQLite (matches ON CONFLICT target)
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_forecast_results_src_metric_date
+        ON forecast_results (source_id, metric, target_date)
+    """))
+    # Optional helper index for date-range queries
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_forecast_results_date
+        ON forecast_results (target_date)
+    """))
+
+    # forecast_models table (used by /api/forecast/health)
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS forecast_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            metric VARCHAR NOT NULL,
+            model_name VARCHAR NOT NULL,
+            model_params TEXT,
+            window_n INTEGER NOT NULL,
+            horizon_n INTEGER NOT NULL,
+            trained_at DATETIME,
+            train_start DATE,
+            train_end DATE,
+            mape NUMERIC,
+            notes TEXT,
+            FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+    """))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_forecast_models_src_metric_window
+        ON forecast_models (source_id, metric, window_n)
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_forecast_models_metric_window
+        ON forecast_models (metric, window_n)
+    """))
+
+
+@pytest.fixture(scope="session")
+def _db_engine():
+    # Yield the shared engine in case tests need it
+    with ENGINE.begin() as conn:
+        _create_sqlite_test_schema(conn)
+    yield ENGINE
+
+
+@pytest.fixture(scope="session")
+def _session_factory(_db_engine):
+    yield SessionTesting
+
+
+@pytest.fixture(scope="function")
+def db(_session_factory, reset_db):
+    session = _session_factory()
+
+    # Override FastAPI dependency to use the testing session
+    def _override_get_db():
         try:
-            yield db
-            db.commit()
+            yield session
         finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = _get_db_override
-except Exception:
-    pass
-
-# Ensure /api/metrics/daily exists for legacy tests
-try:
-    from fastapi.routing import APIRoute
-    import app.routers.metrics as metrics_router
-
-    have_daily = any(isinstance(r, APIRoute) and r.path == "/api/metrics/daily" for r in app.routes)
-    if not have_daily:
-        app.include_router(metrics_router.router, prefix="/api")
-        have_daily = any(isinstance(r, APIRoute) and r.path == "/api/metrics/daily" for r in app.routes)
-    if not have_daily:
-        from fastapi import APIRouter, Query
-        fallback = APIRouter()
-
-        @fallback.get("/api/metrics/daily")
-        def _daily_fallback(
-            source_name: str = Query(...),
-            metric: str = Query(...),
-            start_date: date = Query(...),
-            end_date: date = Query(...),
-        ):
-            return []
-        app.include_router(fallback)
-except Exception:
-    pass
-
-# --------------------------------------------------------------------------------------
-# Auto-unwrap envelope in tests
-# --------------------------------------------------------------------------------------
-@pytest.fixture(autouse=True)
-def _auto_unwrap_envelope_in_tests(monkeypatch):
-    """
-    During tests:
-      - 2xx responses:
-          {"success": true, "data": X} -> return X
-          {"success": true, "data": {"points":[...]}} -> return [...]
-      - 4xx/5xx responses:
-          {"success": false, "error": {"message": "..."}} -> {"detail": "..."}
-    """
-    orig_json = httpx.Response.json
-
-    def patched_json(self: httpx.Response, **kwargs):
-        data = orig_json(self, **kwargs)
-        try:
-            if isinstance(data, dict) and self.status_code < 400 and data.get("success") is True and "data" in data:
-                inner = data["data"]
-                if isinstance(inner, dict) and "points" in inner and set(inner.keys()) <= {"points", "anomalies"}:
-                    return inner["points"]
-                return inner
-            if self.status_code >= 400 and isinstance(data, dict):
-                if "detail" in data:
-                    return data
-                err = data.get("error")
-                if isinstance(err, dict):
-                    msg = err.get("message") or "Error"
-                    return {"detail": msg}
-        except Exception:
             pass
-        return data
 
-    monkeypatch.setattr(httpx.Response, "json", patched_json)
-
-# --------------------------------------------------------------------------------------
-# Fixtures
-# --------------------------------------------------------------------------------------
-@pytest.fixture(scope="session", autouse=True)
-def _create_schema_once():
-    """Recreate schema once and make test-only compat tweaks."""
-    with ENGINE.begin() as conn:
-        Base.metadata.drop_all(bind=conn)
-        Base.metadata.create_all(bind=conn)
-
-        # Ensure test-only column exists
-        conn.execute(text("ALTER TABLE metric_daily ADD COLUMN IF NOT EXISTS value DOUBLE PRECISION"))
-
-        # Allow aggregates to be NULL in tests
-        for col in ("value_sum", "value_avg", "value_count"):
-            conn.execute(text(f"ALTER TABLE metric_daily ALTER COLUMN {col} DROP NOT NULL"))
-
-    yield
-
-@pytest.fixture()
-def db():
-    s = SessionLocal()
+    app.dependency_overrides[get_db] = _override_get_db
     try:
-        yield s
-        s.commit()
+        yield session
     finally:
-        s.close()
+        # Rollback anything left open and close session
+        session.rollback()
+        session.close()
+        # Remove override so other tests can reapply
+        app.dependency_overrides.pop(get_db, None)
 
-# Alias so tests that expect `db_session` keep working
-@pytest.fixture()
+
+@pytest.fixture(scope="function")
 def db_session(db):
-    return db
+    """
+    Some tests expect a `db_session` fixture. Reuse the per-test `db` session.
+    """
+    yield db
 
-@pytest.fixture(autouse=True)
-def _per_test_clean():
-    """Start each test with empty tables."""
-    with ENGINE.begin() as conn:
-        names = [t.name for t in Base.metadata.sorted_tables]
-        if names:
-            conn.execute(text("TRUNCATE TABLE " + ", ".join(names) + " RESTART IDENTITY CASCADE"))
+
+@pytest.fixture(scope="function")
+def session(db):
+    """
+    Some tests refer to a generic `session` fixture. Alias to `db` as well.
+    """
+    yield db
+
+
+@pytest.fixture(scope="function")
+def reset_db(_db_engine):
+    """Drop all user tables in the in-memory SQLite database between tests.
+
+    We intentionally avoid ORM metadata.create_all() because some models use
+    PostgreSQL-specific types like JSONB. Our API routes create tables they need
+    with portable SQL when required. This keeps SQLite happy and tests isolated.
+    """
+    # Before each test, purge all tables
+    with _db_engine.begin() as conn:
+        # Find all tables except SQLite internal ones
+        tables = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )).scalars().all()
+        for t in tables:
+            conn.execute(text(f"DROP TABLE IF EXISTS {t}"))
+        # Recreate the minimal schema required by tests
+        _create_sqlite_test_schema(conn)
+        # Ensure every route uses the shared in-memory ENGINE, even if a test
+        # constructs its own TestClient(app) without our 'client' fixture.
+        def _override_get_db_for_all_tests():
+            session = SessionTesting()  # bound to the shared ENGINE (StaticPool)
+            try:
+                yield session
+            finally:
+                session.close()
+
+        app.dependency_overrides[get_db] = _override_get_db_for_all_tests
     yield
+    # After each test, ensure it's empty again (belt-and-suspenders)
+    with _db_engine.begin() as conn:
+        tables = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )).scalars().all()
+        for t in tables:
+            conn.execute(text(f"DROP TABLE IF EXISTS {t}"))
+        _create_sqlite_test_schema(conn)
 
-@pytest.fixture()
-def reset_db():
-    with ENGINE.begin() as conn:
-        Base.metadata.drop_all(bind=conn)
-        Base.metadata.create_all(bind=conn)
-        conn.execute(text("ALTER TABLE metric_daily ADD COLUMN IF NOT EXISTS value DOUBLE PRECISION"))
-        for col in ("value_sum", "value_avg", "value_count"):
-            conn.execute(text(f"ALTER TABLE metric_daily ALTER COLUMN {col} DROP NOT NULL"))
-    yield
 
-# -------------------- Seed data for forecasting tests --------------------
-from app.models.source import Source
-from app.models.metric_daily import MetricDaily
+@pytest.fixture(scope="function")
+def client(db):
+    """A TestClient that talks to the FastAPI app with our DB override applied per-test.
 
-@pytest.fixture()
+    Depending on the `db` fixture ensures the FastAPI dependency override is active and the
+    SQLite test schema exists for each test that uses this client.
+    """
+    with TestClient(app) as c:
+        yield c
+
+
+# --- New fixture: seeded_metric_daily ---
+@pytest.fixture(scope="function")
 def seeded_metric_daily(db):
     """
-    Seed 30 days of 'value' metrics for source 'demo-source' so forecasting can train.
+    Seed a flat daily series for the default metric ('events_total') for the last 120 days.
+    Returns a dict with source info that tests can use.
     """
-    src = db.query(Source).filter_by(name="demo-source").one_or_none()
-    if not src:
-        src = Source(name="demo-source")
-        db.add(src)
+    src_name = "seeded-source"
+    metric = "events_total"
+
+    # Ensure source exists and get its id
+    existing_id = db.execute(text("SELECT id FROM sources WHERE name = :n"), {"n": src_name}).scalar()
+    if existing_id is None:
+        db.execute(text("INSERT INTO sources (name) VALUES (:n)"), {"n": src_name})
         db.commit()
-        db.refresh(src)
+        existing_id = db.execute(text("SELECT id FROM sources WHERE name = :n"), {"n": src_name}).scalar()
+    source_id = int(existing_id)
 
-    start = date(2025, 9, 1)
-    for i in range(30):
-        d = start + timedelta(days=i)
-        db.merge(MetricDaily(
-            source_id=src.id,
-            metric="value",
-            metric_date=d,
-            value_sum=10.0 + (i % 7),  # simple non-zero pattern
-            value_avg=None,
-            value_count=1,
-        ))
+    # Remove any prior seeded rows for idempotency
+    db.execute(
+        text("DELETE FROM metric_daily WHERE source_id = :sid AND metric = :m"),
+        {"sid": source_id, "m": metric},
+    )
+
+    from datetime import date, timedelta
+
+    today = date.today()
+    start = today - timedelta(days=119)  # inclusive window: 120 days total
+    daily_value = 10.0  # flat series
+
+    rows = []
+    d = start
+    while d <= today:
+        rows.append(
+            {
+                "metric_date": d.isoformat(),
+                "source_id": source_id,
+                "metric": metric,
+                "value": daily_value,
+                "value_sum": daily_value,
+                "value_avg": daily_value,
+                "value_count": 1,
+                "value_distinct": None,
+            }
+        )
+        d += timedelta(days=1)
+
+    db.execute(
+        text(
+            """
+            INSERT INTO metric_daily
+                (metric_date, source_id, metric, value, value_sum, value_avg, value_count, value_distinct)
+            VALUES
+                (:metric_date, :source_id, :metric, :value, :value_sum, :value_avg, :value_count, :value_distinct)
+            """
+        ),
+        rows,
+    )
     db.commit()
-    return src.id
 
-# Single session-scoped TestClient
-@pytest.fixture(scope="session")
-def client():
-    return TestClient(app)
+    return {
+        "source_name": src_name,
+        "source_id": source_id,
+        "metric": metric,
+        "start_date": start,
+        "end_date": today,
+    }

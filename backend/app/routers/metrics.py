@@ -104,7 +104,55 @@ def get_metrics_daily(
                 "value": getattr(r, "value", None),
             }
 
-            # Always set unified 'value' according to agg (default to sum)
+            # --- Normalize types and compute accurate averages ---
+            # Coerce sum/count to numeric types when present
+            v_sum_raw = row.get("value_sum")
+            v_cnt_raw = row.get("value_count")
+            v_avg_raw = row.get("value_avg")
+
+            v_sum = None
+            if v_sum_raw is not None:
+                try:
+                    v_sum = float(v_sum_raw)
+                except Exception:
+                    v_sum = v_sum_raw  # leave as-is if not coercible
+
+            v_cnt = None
+            if v_cnt_raw is not None:
+                try:
+                    v_cnt = int(v_cnt_raw)
+                except Exception:
+                    # try float->int if needed
+                    try:
+                        v_cnt = int(float(v_cnt_raw))
+                    except Exception:
+                        v_cnt = v_cnt_raw
+
+            # Compute average whenever possible so tests see precise 4.5, etc.
+            computed_avg = None
+            if v_sum is not None and isinstance(v_cnt, (int, float)) and v_cnt not in (None, 0):
+                try:
+                    computed_avg = float(v_sum) / float(v_cnt)
+                except Exception:
+                    computed_avg = None
+
+            # Store normalized values back
+            if v_sum is not None:
+                row["value_sum"] = v_sum
+            if isinstance(v_cnt, (int,)) and v_cnt is not None:
+                row["value_count"] = v_cnt
+
+            # Prefer computed average; otherwise coerce stored average to float if possible
+            if computed_avg is not None:
+                row["value_avg"] = computed_avg
+            else:
+                if v_avg_raw is not None:
+                    try:
+                        row["value_avg"] = float(v_avg_raw)
+                    except Exception:
+                        row["value_avg"] = v_avg_raw
+
+            # --- Set unified 'value' according to agg (default to sum) ---
             if agg_norm == "avg":
                 row["value"] = row.get("value_avg")
             elif agg_norm == "count":
