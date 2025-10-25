@@ -30,26 +30,3 @@ frontend/.env
 # cypress artifacts
 cypress/screenshots/
 cypress/videos/
-# local venv
-.venv/
-
-
-# macOS
-.DS_Store
-
-# Node / Vite
-node_modules/
-dist/
-.vite/
-vite.svg
-
-# Cypress artifacts
-frontend/cypress/screenshots/
-frontend/cypress/videos/
-
-# Coverage & caches
-.coverage
-coverage/
-**/__pycache__/
-.mypy_cache/
-pytest_cache/
