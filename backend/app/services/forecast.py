@@ -1,7 +1,7 @@
 # app/services/forecast.py
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Tuple, Iterable
+from typing import Tuple, Iterable, List
 import numpy as np
 import pandas as pd
 from sqlalchemy import select, asc
@@ -128,148 +128,122 @@ def run_forecast(db: Session, source_name: str, metric: str, horizon_days: int =
 
 # ---------- Metrics ----------
 
-def _mape(actuals: Iterable[float], preds: Iterable[float]) -> float:
-    """
-    Mean Absolute Percentage Error (%). Skips rows where actual == 0 to avoid blowups.
-    Returns 100.0 if no valid comparisons.
-    """
-    total = 0.0
-    n = 0
-    for a, p in zip(actuals, preds):
-        if a is None or p is None:
-            continue
-        if a == 0:
-            continue
-        total += abs((a - p) / a)
-        n += 1
-    if n == 0:
+
+def _mape(actual: pd.Series, pred: pd.Series, eps: float = 1e-6) -> float:
+    actual, pred = actual.align(pred, join="inner")
+    if len(actual) == 0:
         return 100.0
-    return 100.0 * (total / n)
+    denom = actual.abs().clip(lower=eps)
+    return float(((actual - pred).abs() / denom).mean() * 100.0)
 
-def _fetch_training_series(
-    db: Session, source_id: int, metric: str, n: int
-) -> Tuple[list[date], list[float]]:
-    q = (
-        select(MetricDaily.metric_date, MetricDaily.value_sum)
-        .where(MetricDaily.source_id == source_id, MetricDaily.metric == metric)
-        .order_by(asc(MetricDaily.metric_date))
-    )
-    rows = db.execute(q).all()
-    if not rows:
-        return [], []
-    dates = [r[0] for r in rows][-n:]
-    vals = [float(r[1]) if r[1] is not None else 0.0 for r in rows][-n:]
-    return dates, vals
 
-def _naive_lacf_forecast(vals: list[float], horizon_n: int) -> list[float]:
-    """Baseline: last observation carried forward."""
-    last = vals[-1] if vals else 0.0
-    return [last] * horizon_n
+# ------------------ Rolling Backtest Helpers ------------------
 
-# ---------- Upsert health ----------
+def _mae(a: Iterable[float], p: Iterable[float]) -> float:
+    a = np.asarray(list(a), dtype=float); p = np.asarray(list(p), dtype=float)
+    return float(np.mean(np.abs(a - p)))
 
-def upsert_forecast_health(
+def _rmse(a: Iterable[float], p: Iterable[float]) -> float:
+    a = np.asarray(list(a), dtype=float); p = np.asarray(list(p), dtype=float)
+    return float(np.sqrt(np.mean((a - p) ** 2)))
+
+def _smape(a: Iterable[float], p: Iterable[float]) -> float:
+    a = np.asarray(list(a), dtype=float); p = np.asarray(list(p), dtype=float)
+    denom = np.abs(a) + np.abs(p)
+    denom = np.where(denom == 0.0, 1.0, denom)
+    return float(100.0 * np.mean(np.abs(a - p) / denom))
+
+def _forecast_vector(train: pd.Series, horizon: int) -> List[float]:
+    # Use SARIMAX if available and we have enough points; otherwise naive last-value
+    MIN_POINTS = 14
+    if SARIMAX is None or len(train) < MIN_POINTS:
+        last = float(train.iloc[-1]) if len(train) else 0.0
+        return [last] * horizon
+    try:
+        model = SARIMAX(
+            train,
+            order=(1, 1, 1),
+            seasonal_order=(0, 0, 0, 0),
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+        fit = model.fit(disp=False)
+        fc = fit.forecast(steps=horizon)
+        return [float(x) for x in fc.tolist()]
+    except Exception:
+        last = float(train.iloc[-1]) if len(train) else 0.0
+        return [last] * horizon
+
+def _split_rolling_origin(series: pd.Series, fold_idx: int, horizon: int) -> tuple[pd.Series, pd.Series]:
+    """
+    For fold t: test is the (t+1)-th block of size horizon from the end.
+    """
+    start = len(series) - (fold_idx + 1) * horizon
+    if start <= 0:
+        return series.iloc[:0], series.iloc[0:0]
+    train = series.iloc[:start]
+    test = series.iloc[start : start + horizon]
+    return train, test
+
+def run_rolling_backtest(
     db: Session,
-    *,
     source_name: str,
     metric: str,
-    window_n: int = 90,
-    horizon_n: int = 7,
-) -> ForecastModel:
-    """
-    Train/refresh health: compute MAPE on a simple holdout and upsert into forecast_models.
-    Strategy:
-      - Load last window_n + horizon_n points from metric_daily.
-      - Train on window_n, predict horizon_n with baseline; compare to next horizon_n actuals -> MAPE.
-    """
-    src = db.execute(select(Source).where(Source.name == source_name)).scalar_one_or_none()
-    if not src:
-        raise ValueError(f"Unknown source_name={source_name}")
-
-    total_needed = window_n + horizon_n
-    dates_all, vals_all = _fetch_training_series(db, src.id, metric, total_needed)
-    trained_at = datetime.now(timezone.utc)
-
-    if len(vals_all) < total_needed:
-        # Not enough history; still upsert a row with mape=100 to signal low reliability.
-        return _upsert_model_row(
-            db,
-            source_id=src.id,
-            metric=metric,
-            window_n=window_n,
-            horizon_n=horizon_n,
-            trained_at=trained_at,
-            train_start=dates_all[0] if dates_all else None,
-            train_end=dates_all[window_n - 1] if len(dates_all) >= window_n else None,
-            mape=100.0,
-            model_params={"kind": "naive_lacf", "reason": "insufficient_history"},
-        )
-
-    train_vals = vals_all[:window_n]
-    holdout_vals = vals_all[window_n:window_n + horizon_n]
-    preds = _naive_lacf_forecast(train_vals, horizon_n)
-    mape = _mape(holdout_vals, preds)
-
-    return _upsert_model_row(
-        db,
-        source_id=src.id,
-        metric=metric,
-        window_n=window_n,
-        horizon_n=horizon_n,
-        trained_at=trained_at,
-        train_start=dates_all[0],
-        train_end=dates_all[window_n - 1],
-        mape=float(mape),
-        model_params={"kind": "naive_lacf", "window_n": window_n, "horizon_n": horizon_n},
-    )
-
-def _upsert_model_row(
-    db: Session,
     *,
-    source_id: int,
-    metric: str,
-    window_n: int,
-    horizon_n: int,
-    trained_at,
-    train_start,
-    train_end,
-    mape: float,
-    model_params: dict,
-) -> ForecastModel:
-    existing = db.execute(
-        select(ForecastModel).where(
-            ForecastModel.source_id == source_id,
-            ForecastModel.metric == metric,
-            ForecastModel.window_n == window_n,
-        )
-    ).scalar_one_or_none()
+    folds: int = 5,
+    horizon: int = 7,
+    window_n: int = 90,
+) -> dict:
+    """
+    Expanding-window rolling-origin backtest with aggregate metrics and a 0–100 score.
+    Returns: {'folds', 'avg_mae', 'avg_rmse', 'avg_mape', 'avg_smape', 'score'}
+    """
+    series_all = fetch_metric_series(db, source_name, metric)
+    if series_all.empty:
+        return {"folds": 0, "avg_mae": None, "avg_rmse": None, "avg_mape": None, "avg_smape": None, "score": 0}
 
-    if existing:
-        existing.trained_at = trained_at
-        existing.horizon_n = horizon_n
-        existing.train_start = train_start
-        existing.train_end = train_end
-        existing.mape = mape
-        existing.model_params = model_params or {}
-        db.add(existing)
-        db.commit()
-        db.refresh(existing)
-        return existing
+    need = window_n + folds * horizon
+    series = series_all.tail(need)
 
-    fm = ForecastModel(
-        source_id=source_id,
-        metric=metric,
-        model_name="SARIMAX",
-        model_params=model_params or {},
-        window_n=window_n,
-        horizon_n=horizon_n,
-        trained_at=trained_at,
-        train_start=train_start,
-        train_end=train_end,
-        mape=mape,
-        notes=None,
-    )
-    db.add(fm)
-    db.commit()
-    db.refresh(fm)
-    return fm
+    results = []
+    for t in range(folds):
+        train, test = _split_rolling_origin(series, t, horizon)
+        if len(test) < horizon or len(train) < 8:
+            break
+        pred = _forecast_vector(train, horizon)
+        y_true = test.values.astype(float)[: len(pred)]
+        mae = _mae(y_true, pred)
+        rmse = _rmse(y_true, pred)
+        mape = _mape(pd.Series(y_true), pd.Series(pred))
+        smape = _smape(y_true, pred)
+        results.append({"mae": mae, "rmse": rmse, "mape": mape, "smape": smape})
+
+    if not results:
+        return {"folds": 0, "avg_mae": None, "avg_rmse": None, "avg_mape": None, "avg_smape": None, "score": 0}
+
+    avgs = {
+        "avg_mae": float(np.mean([r["mae"] for r in results])),
+        "avg_rmse": float(np.mean([r["rmse"] for r in results])),
+        "avg_mape": float(np.mean([r["mape"] for r in results])),
+        "avg_smape": float(np.mean([r["smape"] for r in results])),
+    }
+    score = max(0.0, min(100.0, 100.0 - (avgs["avg_mape"] + avgs["avg_smape"]) / 2.0))
+    return {"folds": len(results), **avgs, "score": float(score)}
+
+
+
+def upsert_forecast_health(
+    db: Session, *, source_name: str, metric: str, window_n: int = 90
+):
+    """Lightweight health: MAPE of naive one-step persistence over last N days.
+    Returns a SimpleNamespace(trained_at, window_n, mape)."""
+    from types import SimpleNamespace
+    s = fetch_metric_series(db, source_name, metric)
+    if s.empty or len(s) < 2:
+        mape = 100.0
+    else:
+        s = s.tail(window_n + 1)
+        pred = s.shift(1).dropna()
+        actual = s.iloc[1:]
+        mape = _mape(actual, pred)
+    return SimpleNamespace(trained_at=datetime.now(timezone.utc), window_n=int(window_n), mape=float(mape))
