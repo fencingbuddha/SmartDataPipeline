@@ -1,4 +1,3 @@
-# app/routers/forecast.py
 from __future__ import annotations
 
 from app.schemas.forecast_health import ForecastHealthOut
@@ -114,6 +113,10 @@ def _normalize_rows(raw_rows: List[Dict[str, Any]], metric: str) -> List[Dict[st
         lo = _safe_float(r.get("yhat_lo"))
         hi = _safe_float(r.get("yhat_hi"))
         lower, upper = (lo, hi) if lo <= hi else (hi, lo)
+        if y < lower:
+            lower = y
+        if y > upper:
+            upper = y
 
         # Build metric_date first so we can derive legacy 'date'
         metric_date = _to_utc_midnight_z(r.get("forecast_date"))
@@ -301,6 +304,47 @@ def forecast_backtest(
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
+@router.get("/reliability")
+def forecast_reliability(
+    source_name: str = Query(..., description="Logical source name"),
+    metric: str = Query(..., description="Metric key (e.g., events_total)"),
+    folds: int = Query(5, ge=1, le=30, description="Number of rolling-origin folds"),
+    horizon: int = Query(7, ge=1, le=30, description="Per-fold forecast horizon (days)"),
+    window_n: int = Query(90, ge=14, le=365, description="History window for backtesting (days)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Lightweight alias that exposes reliability metrics for (source_name, metric).
+    Internally calls run_rolling_backtest and returns an immutable summary suitable
+    for a UI badge and details drawer.
+    """
+    try:
+        agg = run_rolling_backtest(
+            db,
+            source_name=source_name,
+            metric=metric,
+            folds=folds,
+            horizon=horizon,
+            window_n=window_n,
+        )
+        return JSONResponse(
+            content={
+                "ok": True,
+                "data": agg,
+                "meta": {
+                    "source_name": source_name,
+                    "metric": metric,
+                    "folds": int(folds),
+                    "horizon": int(horizon),
+                    "window_n": int(window_n),
+                },
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
 @router.get("/health", response_model=ForecastHealthOut)
 def forecast_health(
     source_name: str = Query(..., description="e.g., demo-source"),
@@ -311,6 +355,10 @@ def forecast_health(
     """
     Refresh health metadata and return { trained_at, window, mape }.
     """
+    exists = db.execute(select(Source.id).where(Source.name == source_name)).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=422, detail=f"Unknown source '{source_name}'")
+
     try:
         fm = upsert_forecast_health(db, source_name=source_name, metric=metric, window_n=window)
     except ValueError as e:
