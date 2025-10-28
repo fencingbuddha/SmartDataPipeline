@@ -33,7 +33,11 @@ from app.db.session import get_db
 from app.models.source import Source
 from app.models.metric_daily import MetricDaily
 from app.models.forecast_results import ForecastResults
-from app.services.forecast import run_forecast, upsert_forecast_health
+from app.services.forecast import (
+    run_forecast,
+    upsert_forecast_health,
+    run_rolling_backtest,
+)
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 
@@ -269,6 +273,34 @@ def forecast_run(
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
     
+@router.post("/backtest")
+def forecast_backtest(
+    source_name: str = Query(..., description="Logical source name"),
+    metric: str = Query(..., description="Metric key (e.g., events_total)"),
+    folds: int = Query(5, ge=1, le=30, description="Number of rolling-origin folds"),
+    horizon: int = Query(7, ge=1, le=30, description="Per-fold forecast horizon (days)"),
+    window_n: int = Query(90, ge=14, le=365, description="History window for backtesting (days)"),
+    db: Session = Depends(get_db),
+):
+    """
+    Run rolling-origin backtesting for (source_name, metric) and persist a compact
+    summary to forecast_models. Returns aggregate metrics and a composite score.
+    """
+    try:
+        agg = run_rolling_backtest(
+            db,
+            source_name=source_name,
+            metric=metric,
+            folds=folds,
+            horizon=horizon,
+            window_n=window_n,
+        )
+        return JSONResponse(content={"ok": True, "data": agg})
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
 @router.get("/health", response_model=ForecastHealthOut)
 def forecast_health(
     source_name: str = Query(..., description="e.g., demo-source"),
