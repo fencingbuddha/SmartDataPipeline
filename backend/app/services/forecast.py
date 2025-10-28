@@ -1,7 +1,7 @@
 # app/services/forecast.py
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Tuple, Iterable, List
+from typing import Tuple, Iterable, List, Any
 import numpy as np
 import pandas as pd
 from sqlalchemy import select, asc
@@ -153,12 +153,27 @@ def _smape(a: Iterable[float], p: Iterable[float]) -> float:
     denom = np.where(denom == 0.0, 1.0, denom)
     return float(100.0 * np.mean(np.abs(a - p) / denom))
 
-def _forecast_vector(train: pd.Series, horizon: int) -> List[float]:
+def _forecast_vector(train: pd.Series, horizon: int) -> pd.DataFrame:
     # Use SARIMAX if available and we have enough points; otherwise naive last-value
     MIN_POINTS = 14
+    freq = getattr(train.index, "freq", None)
+    if freq is None:
+        try:
+            freq = pd.infer_freq(train.index)
+        except Exception:
+            freq = None
+    if freq is None:
+        freq = "D"
+    if len(train):
+        start_idx = train.index[-1] + pd.tseries.frequencies.to_offset(freq)
+    else:
+        start_idx = pd.Timestamp.utcnow().normalize()
+    idx = pd.date_range(start_idx, periods=horizon, freq=freq)
+
     if SARIMAX is None or len(train) < MIN_POINTS:
         last = float(train.iloc[-1]) if len(train) else 0.0
-        return [last] * horizon
+        vals = np.full(horizon, last, dtype=float)
+        return pd.DataFrame({"yhat": vals, "yhat_lower": vals, "yhat_upper": vals}, index=idx)
     try:
         model = SARIMAX(
             train,
@@ -169,10 +184,15 @@ def _forecast_vector(train: pd.Series, horizon: int) -> List[float]:
         )
         fit = model.fit(disp=False)
         fc = fit.forecast(steps=horizon)
-        return [float(x) for x in fc.tolist()]
+        preds = np.asarray(fc, dtype=float)
+        return pd.DataFrame(
+            {"yhat": preds, "yhat_lower": preds, "yhat_upper": preds},
+            index=idx,
+        )
     except Exception:
         last = float(train.iloc[-1]) if len(train) else 0.0
-        return [last] * horizon
+        vals = np.full(horizon, last, dtype=float)
+        return pd.DataFrame({"yhat": vals, "yhat_lower": vals, "yhat_upper": vals}, index=idx)
 
 def _split_rolling_origin(series: pd.Series, fold_idx: int, horizon: int) -> tuple[pd.Series, pd.Series]:
     """
@@ -210,12 +230,13 @@ def run_rolling_backtest(
         train, test = _split_rolling_origin(series, t, horizon)
         if len(test) < horizon or len(train) < 8:
             break
-        pred = _forecast_vector(train, horizon)
-        y_true = test.values.astype(float)[: len(pred)]
-        mae = _mae(y_true, pred)
-        rmse = _rmse(y_true, pred)
-        mape = _mape(pd.Series(y_true), pd.Series(pred))
-        smape = _smape(y_true, pred)
+        pred_df = _forecast_vector(train, horizon)
+        yhat = pred_df["yhat"].to_numpy()
+        y_true = test.values.astype(float)[: len(yhat)]
+        mae = _mae(y_true, yhat)
+        rmse = _rmse(y_true, yhat)
+        mape = _mape(pd.Series(y_true), pd.Series(yhat))
+        smape = _smape(y_true, yhat)
         results.append({"mae": mae, "rmse": rmse, "mape": mape, "smape": smape})
 
     if not results:
@@ -232,9 +253,7 @@ def run_rolling_backtest(
 
 
 
-def upsert_forecast_health(
-    db: Session, *, source_name: str, metric: str, window_n: int = 90
-):
+def upsert_forecast_health(db: Session, *, source_name: str, metric: str, window_n: int = 90, horizon_n: int | None = None, **_ignore):
     """Lightweight health: MAPE of naive one-step persistence over last N days.
     Returns a SimpleNamespace(trained_at, window_n, mape)."""
     from types import SimpleNamespace
@@ -247,3 +266,17 @@ def upsert_forecast_health(
         actual = s.iloc[1:]
         mape = _mape(actual, pred)
     return SimpleNamespace(trained_at=datetime.now(timezone.utc), window_n=int(window_n), mape=float(mape))
+
+
+def _to_utc_midnight_z(d: str | date | datetime) -> str:
+    """
+    Accept 'YYYY-MM-DD' strings, dates, or datetimes and normalize them to UTC midnight ISO8601 strings.
+    """
+    if isinstance(d, str):
+        y, m, dd = map(int, d.split("-"))
+        dt = datetime(y, m, dd, tzinfo=timezone.utc)
+    elif isinstance(d, date) and not isinstance(d, datetime):
+        dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    else:
+        dt = d.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return dt.isoformat().replace("+00:00", "Z")
