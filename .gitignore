@@ -9,16 +9,31 @@ backend/.venv/
 backend/__pycache__/
 backend/**/*.pyc
 backend/.env
+backend/.env.*
+backend/app.db
 backend/.coverage
 backend/.coverage.*
 backend/htmlcov/
+backend/coverage.xml
+backend/test.db
 backend/.pytest_cache/
 backend/.mypy_cache/
+backend/.ruff_cache/
 
 # SQLite databases (generated data)
 data/*.db
 data/*.sqlite*
 backend/migrations/*.pyc
+backend/*.db
+backend/*.sqlite*
+
+# ---------- Root-level Python / Coverage Artifacts ----------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
 
 # ---------- Node / Frontend ----------
 frontend/node_modules/
