@@ -1,0 +1,1 @@
+{"ok":true,"data":{"folds":5,"avg_mae":2.914285714285714,"avg_rmse":3.593134408473025,"avg_mape":2.842883729466128,"avg_smape":1.430379967513152,"score":97.86336815151036},"meta":{"source_name":"demo-source","metric":"events_total","folds":5,"horizon":7,"window_n":90}}
