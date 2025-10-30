@@ -152,6 +152,40 @@ def _create_sqlite_test_schema(conn):
         ON forecast_models (metric, window_n)
     """))
 
+    # forecast_reliability tables used by reliability service/router
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS forecast_reliability (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_name VARCHAR NOT NULL,
+            metric VARCHAR NOT NULL,
+            as_of_date DATE NOT NULL,
+            score INTEGER NOT NULL,
+            mape FLOAT NOT NULL,
+            rmse FLOAT NOT NULL,
+            smape FLOAT NOT NULL
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS forecast_reliability_fold (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reliability_id INTEGER NOT NULL,
+            fold_index INTEGER NOT NULL,
+            mae FLOAT NOT NULL,
+            rmse FLOAT NOT NULL,
+            mape FLOAT NOT NULL,
+            bias FLOAT NOT NULL,
+            FOREIGN KEY(reliability_id) REFERENCES forecast_reliability(id) ON DELETE CASCADE
+        )
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_forecast_reliability_meta
+        ON forecast_reliability (source_name, metric, as_of_date)
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_forecast_reliability_fold_parent
+        ON forecast_reliability_fold (reliability_id, fold_index)
+    """))
+
 
 @pytest.fixture(scope="session")
 def _db_engine():
