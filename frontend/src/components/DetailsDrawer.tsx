@@ -232,6 +232,7 @@ export const DetailsDrawer: React.FC<DetailsDrawerProps> = ({ open, onClose, det
     <div className="fixed inset-0 z-[1000] relative" data-testid="rel-drawer">
       <div
         aria-hidden="true"
+        data-testid="rel-backdrop"
         className="absolute inset-0 bg-black/50"
         onClick={onClose}
       />
@@ -280,7 +281,6 @@ export const DetailsDrawer: React.FC<DetailsDrawerProps> = ({ open, onClose, det
 
         <div className="flex-1 overflow-auto px-6 py-6 space-y-6">
           <div style={{ padding: "0 18px" }} />
-
           <div style={{ padding: "0 18px" }}>
             <table
               className="w-full text-sm"
