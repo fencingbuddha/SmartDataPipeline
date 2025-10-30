@@ -13,6 +13,7 @@ from app.routers.sources import router as sources_router
 from app.routers.forecast import router as forecast_router
 from app.routers.anomaly import router as anomaly_router
 from app.routers.metrics import router as metrics_router
+from app.routers.forecast_reliability import router as forecast_reliability_router
 from app.db.session import get_engine
 from app.db.base import Base
 
@@ -51,3 +52,4 @@ app.include_router(sources_router)
 app.include_router(forecast_router)
 app.include_router(anomaly_router)
 app.include_router(metrics_router)
+app.include_router(forecast_reliability_router)
