@@ -69,13 +69,18 @@ export const ReliabilityBadge: React.FC<ReliabilityBadgeProps> = ({
       type="button"
       onClick={onClick}
       className={`inline-flex items-center rounded-2xl ${compact ? "px-2 py-0.5 text-[10px]" : "px-3 py-1 text-xs"} ${tone}`}
+      style={{ columnGap: compact ? 6 : 10 }}
       data-testid="rel-badge"
       aria-label={`forecast reliability ${resolvedGrade}${score != null ? `, score ${Math.round(score)}` : ""}`}
     >
-      <span className="font-medium mr-1">Reliability</span>
-      <span className="font-semibold" data-testid="rel-grade">{resolvedGrade}</span>
+      <span style={{ fontWeight: 600 }}>Reliability:</span>
+      <span style={{ fontWeight: 700 }} data-testid="rel-grade">
+        {resolvedGrade}
+      </span>
       {score != null && (
-        <span className="opacity-70 ml-1" data-testid="rel-score">{Math.round(score)}</span>
+        <span style={{ fontWeight: 700 }} data-testid="rel-score">
+          /{Math.round(score)}
+        </span>
       )}
     </button>
   );
