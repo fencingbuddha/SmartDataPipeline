@@ -6,6 +6,7 @@ import { KpiTiles } from "../components/dashboard/KpiTiles";
 import MetricDailyChart from "../components/MetricDailyChart";
 import MetricDailyTableView from "../components/dashboard/MetricDailyTableView";
 import { Text } from "../ui";
+import { ReliabilityBadge, DetailsDrawer, useReliability } from "../ui";
 
 /* ---------- config ---------- */
 const API_BASE = "";
@@ -227,6 +228,15 @@ export default function DashboardPage() {
   const [start, setStart] = useState(() => isoDaysAgo(6));
   const [end, setEnd] = useState(() => isoDaysAgo(0));
   const [dateRange, setDateRange] = useState<"7" | "14" | "30">("7");
+
+  // Reliability UI state
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Forecast reliability data for the current Source/Metric
+  const { data: rel, loading: relLoading, error: relError } = useReliability({
+    sourceName,
+    metric,
+  });
 
   // Sources / metric names (dynamic)
   const [sources, setSources] = useState<Source[]>([]);
@@ -670,6 +680,19 @@ export default function DashboardPage() {
             Show forecast
           </label>
 
+          {/* Forecast Reliability badge */}
+          <span aria-hidden="true" style={{ width: 1, height: 24, background: "#e5e7eb" }} />
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <ReliabilityBadge
+              compact
+              score={rel?.score ?? null}
+              grade={(rel?.grade as any) ?? undefined}
+              loading={relLoading}
+              error={relError ?? null}
+              onClick={() => setDrawerOpen(true)}
+            />
+          </div>
+
           {/* Upload */}
           <input
             ref={fileRef}
@@ -755,6 +778,12 @@ export default function DashboardPage() {
         </div>
       }
       right={<MetricDailyTableView rows={rows} />}
-    />
+    >
+      <DetailsDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        details={rel ?? undefined}
+      />
+    </DashboardShell>
   );
 }
