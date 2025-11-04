@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "data": {
+    "folds": 5,
+    "avg_mae": 2.993615094682247,
+    "avg_rmse": 3.615368792469443,
+    "avg_mape": 2.930169479082257,
+    "avg_smape": 1.4819558013494736,
+    "score": 97.79393735978414
+  },
+  "meta": {
+    "source_name": "demo-source",
+    "metric": "events_total",
+    "folds": 5,
+    "horizon": 7,
+    "window_n": 90
+  }
+}

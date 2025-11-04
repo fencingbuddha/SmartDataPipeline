@@ -9,6 +9,14 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.db.base import Base
+from app.models import (
+    clean_event,
+    raw_event,
+    metric_daily,
+    forecast_model,
+    forecast_results,
+    forecast_reliability,
+)
 from app.db.session import engine as app_engine
 import app.models
 
