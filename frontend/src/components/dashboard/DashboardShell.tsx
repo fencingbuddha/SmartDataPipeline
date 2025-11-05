@@ -9,6 +9,7 @@ export type DashboardShellProps = {
   footer?: React.ReactNode;
   tiles?: React.ReactNode;
   children?: React.ReactNode;
+  exportRef?: React.Ref<HTMLDivElement>;
 };
 
 export const DashboardShell: React.FC<DashboardShellProps> = ({
@@ -19,6 +20,7 @@ export const DashboardShell: React.FC<DashboardShellProps> = ({
   footer,
   tiles,
   children,
+  exportRef,
 }) => {
   return (
     <>
@@ -31,20 +33,27 @@ export const DashboardShell: React.FC<DashboardShellProps> = ({
           {filters ? <div className="sd-my-2">{filters}</div> : null}
         </Card>
 
-        {tiles ? (
-          <Stack direction="row" style={{ flexWrap: "wrap" }}>
-            {tiles}
-          </Stack>
-        ) : null}
+        {/* Export wrapper spans tiles + both panels; right pane will be filtered by exporter */}
+        <div ref={exportRef}>
+          {tiles ? (
+            <Stack direction="row" style={{ flexWrap: "wrap" }}>
+              {tiles}
+            </Stack>
+          ) : null}
 
-        <Grid columns={12} className="sd-my-2">
-          <Card className="sd-card" style={{ gridColumn: "span 7" }}>
-            {left}
-          </Card>
-          <Card className="sd-card" style={{ gridColumn: "span 5" }}>
-            {right}
-          </Card>
-        </Grid>
+          <Grid columns={12} className="sd-my-2">
+            <Card className="sd-card" style={{ gridColumn: "span 7" }}>
+              {left}
+            </Card>
+            <Card
+              className="sd-card"
+              style={{ gridColumn: "span 5" }}
+              data-export-ignore="true"
+            >
+              {right}
+            </Card>
+          </Grid>
+        </div>
 
         {footer ? <div className="sd-my-2">{footer}</div> : null}
       </Stack>
