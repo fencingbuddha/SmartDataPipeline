@@ -1,5 +1,7 @@
 // frontend/src/pages/DashboardPage.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toPng } from "html-to-image";
+import { saveAs } from "file-saver";
 import { DashboardShell } from "../components/dashboard/DashboardShell";
 import { FiltersBar } from "../components/dashboard/FiltersBar";
 import { KpiTiles } from "../components/dashboard/KpiTiles";
@@ -267,6 +269,8 @@ export default function DashboardPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
+  const exportRef = useRef<HTMLDivElement | null>(null);
+
   /* ---------- load sources + metric names ---------- */
   async function loadSources() {
     const r = await fetch(`${API_BASE}/api/sources`, { cache: "no-store" });
@@ -515,6 +519,40 @@ export default function DashboardPage() {
     }
   }
 
+  async function onExportPng() {
+    if (!exportRef.current) return;
+    const dataUrl = await toPng(exportRef.current, {
+      backgroundColor: "white",
+      pixelRatio: 2,
+      cacheBust: true,
+      filter: (node) => {
+        return !(
+          node instanceof Element &&
+          node.getAttribute &&
+          node.getAttribute("data-export-ignore") === "true"
+        );
+      },
+    });
+    const fname = `dashboard_${sourceName}_${metric}_${start}_${end}.png`;
+    saveAs(dataUrl, fname);
+  }
+
+  function onExportCsv() {
+    const qs = new URLSearchParams({
+      source_name: String(sourceName),
+      metric: String(metric),
+    });
+    if (start) qs.set("start", start);
+    if (end) qs.set("end", end);
+    const url = `${API_BASE}/api/metrics/export/csv?${qs.toString()}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `metric_${metric}_${sourceName}_${start}_${end}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
   /* ---------- Reset handler ---------- */
   function handleReset() {
     const newStart = isoDaysAgo(6);
@@ -693,6 +731,24 @@ export default function DashboardPage() {
             />
           </div>
 
+          {/* Export buttons */}
+          <button
+            type="button"
+            className="sd-btn ghost"
+            onClick={onExportPng}
+            data-testid="btn-export-png"
+          >
+            Export PNG
+          </button>
+          <button
+            type="button"
+            className="sd-btn ghost"
+            onClick={onExportCsv}
+            data-testid="btn-export-csv"
+          >
+            Export CSV
+          </button>
+
           {/* Upload */}
           <input
             ref={fileRef}
@@ -734,6 +790,7 @@ export default function DashboardPage() {
       headerRight={null}
       filters={filters}
       tiles={<KpiTiles kpis={kpis} />}
+      exportRef={exportRef}
       left={
         <div>
           <Text variant="h3">Daily KPIs ({metric})</Text>
