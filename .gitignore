@@ -52,6 +52,12 @@ cypress/screenshots/
 cypress/videos/
 cypress/downloads/
 
+# ---------- Frontend Cypress ----------
+frontend/cypress/screenshots/
+frontend/cypress/videos/
+frontend/cypress/downloads/
+frontend/cypress/results/
+
 # ---------- Generic build outputs ----------
 dist/
 build/
