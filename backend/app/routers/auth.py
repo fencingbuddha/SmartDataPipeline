@@ -49,19 +49,3 @@ def refresh(body: RefreshIn):
         access_token=create_access(email),
         refresh_token=create_refresh(email),
     )
-
-@router.get("/me", response_model=UserOut)
-def me(user: User = Depends(get_current_user)):
-    return UserOut(id=user.id, email=user.email, is_active=user.is_active)
-
-# Optional: a tiny helper to create a first user if you don't want a separate script.
-@router.post("/_seed_demo_user", include_in_schema=False)
-def _seed_demo_user(db: Session = Depends(get_db)):
-    email = "demo@local"
-    pwd = "demo123"
-    u = db.query(User).filter_by(email=email).first()
-    if not u:
-        u = User(email=email, password_hash=hash_password(pwd))
-        db.add(u)
-        db.commit()
-    return {"email": email, "password": pwd}
