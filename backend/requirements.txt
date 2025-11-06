@@ -16,6 +16,7 @@ alembic>=1.12,<2.0
 # --- Validation / uploads ---
 pydantic>=2.6,<3.0
 python-multipart>=0.0.9
+email-validator>=2.1,<3.0
 
 # --- Testing ---
 pytest>=8.2,<9.0

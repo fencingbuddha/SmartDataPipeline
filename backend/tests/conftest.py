@@ -4,10 +4,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from app.core.security import create_access, get_current_user, hash_password
+from app.models.user import User
 
 # Ensure the application runs in test/sqlite mode *before* importing any app modules
 os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("DATABASE_URL", "sqlite://")
+os.environ.setdefault("JWT_SECRET", "test_secret")
+os.environ.setdefault("JWT_ALG", "HS256")
+os.environ.setdefault("JWT_ACCESS_MIN", "15")
+os.environ.setdefault("JWT_REFRESH_DAYS", "7")
 
 # Import the DB session module first so we can patch it before the app is imported
 import app.db.session as app_db_session  # type: ignore
@@ -186,6 +192,52 @@ def _create_sqlite_test_schema(conn):
         ON forecast_reliability_fold (reliability_id, fold_index)
     """))
 
+    # users table for auth tests
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(
+        text(
+            """
+            INSERT INTO users (email, password_hash, is_active)
+            VALUES (:email, :password_hash, 1)
+            ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash, is_active = 1
+            """
+        ),
+        {"email": "demo@example.com", "password_hash": hash_password("demo123")},
+    )
+
+
+# Ensure schema exists even for tests that create TestClient without fixtures
+with ENGINE.begin() as _conn:
+    _create_sqlite_test_schema(_conn)
+
+
+def _override_get_current_user():
+    return User(id=0, email="pytest@example.com", password_hash="", is_active=True)
+
+
+@pytest.fixture(autouse=True)
+def _toggle_auth_override(request):
+    """Bypass JWT for most API tests, but allow opt-out for auth-specific cases."""
+    test_path = str(getattr(request.node, "fspath", ""))
+    needs_real_auth = "test_auth_api.py" in test_path
+    if needs_real_auth:
+        app.dependency_overrides.pop(get_current_user, None)
+        yield
+        app.dependency_overrides.pop(get_current_user, None)
+    else:
+        app.dependency_overrides[get_current_user] = _override_get_current_user
+        try:
+            yield
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
 
 @pytest.fixture(scope="session")
 def _db_engine():
@@ -204,7 +256,6 @@ def _session_factory(_db_engine):
 def db(_session_factory, reset_db):
     session = _session_factory()
 
-    # Override FastAPI dependency to use the testing session
     def _override_get_db():
         try:
             yield session
@@ -215,10 +266,8 @@ def db(_session_factory, reset_db):
     try:
         yield session
     finally:
-        # Rollback anything left open and close session
         session.rollback()
         session.close()
-        # Remove override so other tests can reapply
         app.dependency_overrides.pop(get_db, None)
 
 
@@ -279,12 +328,8 @@ def reset_db(_db_engine):
 
 @pytest.fixture(scope="function")
 def client(db):
-    """A TestClient that talks to the FastAPI app with our DB override applied per-test.
-
-    Depending on the `db` fixture ensures the FastAPI dependency override is active and the
-    SQLite test schema exists for each test that uses this client.
-    """
-    with TestClient(app) as c:
+    token = create_access("pytest@example.com")
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as c:
         yield c
 
 

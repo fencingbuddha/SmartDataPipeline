@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.common import ok, ResponseMeta
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/api/kpi", tags=["kpi"])
-
 
 def _meta(**params) -> ResponseMeta:
     clean = {k: v for k, v in params.items() if v is not None}
@@ -21,16 +21,14 @@ def _meta(**params) -> ResponseMeta:
         generated_at=datetime.now(timezone.utc).isoformat(),
     )
 
-
 @router.post("/run")
 def run_kpi(
     db: Session = Depends(get_db),
-    # Optional filters the tests sometimes pass
+    user = Depends(get_current_user),  # 🔒 require auth
     source_name: Optional[str] = Query(None, description="Filter by logical source name"),
     metric: Optional[str] = Query(None, description="Filter by metric name"),
     start_date: Optional[str] = Query(None, description="YYYY-MM-DD inclusive"),
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD inclusive"),
-    # Variants used by tests (we accept but keep behavior simple)
     agg: str = Query("sum", description="Aggregation type (accepted but not required by tests)"),
     distinct_field: Optional[str] = Query(None, description="If 'id', compute value_distinct"),
 ):
