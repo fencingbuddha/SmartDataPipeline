@@ -37,14 +37,25 @@
 // }
 type VisitOptions = Cypress.VisitOptions;
 
-const API_BASE_URL: string =
-  (Cypress.env("API_BASE_URL") as string) || "http://127.0.0.1:8000";
-const AUTH_EMAIL: string =
-  (Cypress.env("AUTH_EMAIL") as string) || "demo@example.com";
-const AUTH_PASSWORD: string =
-  (Cypress.env("AUTH_PASSWORD") as string) || "demo123";
-const AUTH_PREFIX: string =
-  (Cypress.env("AUTH_STORAGE_PREFIX") as string) || "sdp_";
+const getEnv = (key: string, fallback: string): string => {
+  const fromCypress = Cypress.env(key);
+  if (typeof fromCypress === "string" && fromCypress.trim()) {
+    return fromCypress;
+  }
+  const fromWindow =
+    typeof window !== "undefined"
+      ? (window as any).__APP_ENV__?.[key]
+      : undefined;
+  if (typeof fromWindow === "string" && fromWindow.trim()) {
+    return fromWindow;
+  }
+  return fallback;
+};
+
+const API_BASE_URL = getEnv("VITE_TEST_API_BASE", "http://127.0.0.1:8000");
+const AUTH_EMAIL = getEnv("VITE_TEST_AUTH_EMAIL", "demo@example.com");
+const AUTH_PASSWORD = getEnv("VITE_TEST_AUTH_PASSWORD", "demo123");
+const AUTH_PREFIX = getEnv("VITE_AUTH_STORAGE_PREFIX", "sdp_");
 
 const appendAuthParam = (target: string): string => {
   const base = Cypress.config("baseUrl") || "http://localhost:5173";

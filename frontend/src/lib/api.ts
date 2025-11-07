@@ -5,6 +5,15 @@ const isCypress = isBrowser && Boolean((window as any)?.Cypress);
 const DEFAULT_ORIGIN = isBrowser ? window.location.origin : "http://127.0.0.1:5173";
 const API_BASE = isCypress ? "" : envBase;
 
+if (isBrowser) {
+  (window as any).__APP_ENV__ = {
+    VITE_TEST_API_BASE: import.meta.env.VITE_TEST_API_BASE || "",
+    VITE_TEST_AUTH_EMAIL: import.meta.env.VITE_TEST_AUTH_EMAIL || "",
+    VITE_TEST_AUTH_PASSWORD: import.meta.env.VITE_TEST_AUTH_PASSWORD || "",
+    VITE_AUTH_STORAGE_PREFIX: import.meta.env.VITE_AUTH_STORAGE_PREFIX || "sdp_",
+  };
+}
+
 function resolveUrl(path: string): string {
   if (path.startsWith("http")) return path;
   if (API_BASE) {

@@ -42,6 +42,9 @@ frontend/dist/
 frontend/.env
 frontend/.env.*
 
+#---------- Cypress / Frontend ----------
+frontend/.env.cypress
+
 # Keep lockfiles under version control for reproducible installs:
 # package-lock.json
 # yarn.lock
@@ -73,3 +76,6 @@ backend/.coverage
 backend/htmlcov/
 backend/.env
 backend/.env
+
+# Cypress image diff artifacts
+frontend/cypress-image-diff-html-report/
