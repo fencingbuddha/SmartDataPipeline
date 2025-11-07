@@ -52,9 +52,9 @@ const getEnv = (key: string, fallback: string): string => {
   return fallback;
 };
 
-const API_BASE_URL = getEnv("VITE_TEST_API_BASE", "");
-const AUTH_EMAIL = getEnv("VITE_TEST_AUTH_EMAIL", "");
-const AUTH_PASSWORD = getEnv("VITE_TEST_AUTH_PASSWORD", "");
+const API_BASE_URL = getEnv("VITE_TEST_API_BASE", "http://127.0.0.1:8000");
+const AUTH_EMAIL = getEnv("VITE_TEST_AUTH_EMAIL", "demo@example.com");
+const AUTH_PASSWORD = getEnv("VITE_TEST_AUTH_PASSWORD", "demo123");
 const AUTH_PREFIX = getEnv("VITE_AUTH_STORAGE_PREFIX", "sdp_");
 
 const appendAuthParam = (target: string): string => {
