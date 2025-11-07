@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+try:  # pragma: no cover
+    from fastapi_instrumentator import Instrumentator
+except ModuleNotFoundError:  # pragma: no cover
+    Instrumentator = None
 
 # Import router objects explicitly to avoid module name collisions
 from app.routers.health import router as health_router
@@ -18,6 +22,11 @@ from app.routers.forecast_reliability import router as forecast_reliability_rout
 from app.db.session import get_engine
 from app.db.base import Base
 from app.core.security import get_current_user
+from app.observability.logging import configure_logging
+from app.observability.middleware import register_request_middleware, unhandled_exception_handler
+from app.observability.metrics import router as observability_router
+
+configure_logging()
 
 app = FastAPI(title="Smart Data Pipeline", version="0.7.0")
 
@@ -34,6 +43,8 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=86400
 )
+register_request_middleware(app)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 # Ensure tables exist in dev/e2e so the UI and tests don't 500 on brand-new DBs
 @app.on_event("startup")
@@ -48,6 +59,7 @@ def _ensure_tables() -> None:
 # Public routers
 app.include_router(health_router)
 app.include_router(auth_router)
+app.include_router(observability_router)
 
 # Private routers share the same auth dependency
 require_auth = [Depends(get_current_user)]
@@ -60,3 +72,6 @@ app.include_router(forecast_router, dependencies=require_auth)
 app.include_router(forecast_reliability_router, dependencies=require_auth)
 app.include_router(anomaly_router, dependencies=require_auth)
 app.include_router(sources_router, dependencies=require_auth)
+
+if Instrumentator is not None:  # pragma: no cover - optional when pkg missing
+    Instrumentator(should_group_status_codes=False).instrument(app)
