@@ -9,9 +9,14 @@ import MetricDailyChart from "../components/MetricDailyChart";
 import MetricDailyTableView from "../components/dashboard/MetricDailyTableView";
 import { Text } from "../ui";
 import { ReliabilityBadge, DetailsDrawer, useReliability } from "../ui";
-
-/* ---------- config ---------- */
-const API_BASE = "";
+import {
+  authApi,
+  buildUrl,
+  getJson,
+  postJson,
+  request,
+  tokenStore,
+} from "../lib/api";
 
 /* ---------- types ---------- */
 type Row = {
@@ -41,6 +46,16 @@ type Row = {
 type AnomPoint = { date: string; value: number; z?: number };
 type ForecastPoint = { date: string; yhat: number };
 type Source = { id: number | string; name: string };
+
+function withAuthHeaders(
+  headers: Record<string, string> = {},
+): Record<string, string> {
+  const next: Record<string, string> = { ...headers };
+  if (tokenStore.access) {
+    next.Authorization = `Bearer ${tokenStore.access}`;
+  }
+  return next;
+}
 
 /* ---------- helpers ---------- */
 function isoDaysAgo(n: number) {
@@ -83,21 +98,18 @@ async function fetchAnomalies(params: {
     zThresh = 3,
     signal,
   } = params;
-  const qs = new URLSearchParams({
-    source_name: String(sourceName),
-    metric: String(metric),
-  });
-  if (start) qs.set("start_date", start);
-  if (end) qs.set("end_date", end);
-  qs.set("window", String(windowN));
-  qs.set("z_thresh", String(zThresh));
-
-  const r = await fetch(
-    `${API_BASE}/api/metrics/anomaly/rolling?${qs.toString()}`,
-    { signal },
+  const js: any = await getJson(
+    "/api/metrics/anomaly/rolling",
+    {
+      source_name: String(sourceName),
+      metric: String(metric),
+      start_date: start,
+      end_date: end,
+      window: windowN,
+      z_thresh: zThresh,
+    },
+    signal,
   );
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const js: any = await r.json();
 
   let raw: any = null;
   if (Array.isArray(js)) raw = js;
@@ -178,26 +190,19 @@ async function fetchForecast(
   const key = `fc:${sourceName}:${metric}:${start}:${end}:${horizon ?? "n"}:${nonce ?? 0}`;
   if (FC_CACHE.has(key)) return FC_CACHE.get(key)!;
 
-  const qs = new URLSearchParams({
+  const params: Record<string, string | number | undefined> = {
     source_name: String(sourceName),
     metric: String(metric),
-  });
-
-  // Prefer horizon (so we get 7 points), otherwise legacy start/end
+  };
   if (horizon && horizon > 0) {
-    qs.set("horizon", String(Math.min(30, Math.max(1, horizon))));
+    params.horizon = Math.min(30, Math.max(1, horizon));
   } else {
-    if (start) qs.set("start_date", start);
-    if (end) qs.set("end_date", end);
+    if (start) params.start_date = start;
+    if (end) params.end_date = end;
   }
+  if (nonce) params.nocache = nonce;
 
-  if (nonce) qs.set("nocache", String(nonce));
-  const r = await fetch(`${API_BASE}/api/forecast/daily?${qs.toString()}`, {
-    signal,
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-
-  const js: any = await r.json();
+  const js: any = await getJson("/api/forecast/daily", params, signal);
   const raw: any[] = Array.isArray(js)
     ? js
     : (js.data ?? js.points ?? js?.data?.points ?? []);
@@ -273,8 +278,7 @@ export default function DashboardPage() {
 
   /* ---------- load sources + metric names ---------- */
   async function loadSources() {
-    const r = await fetch(`${API_BASE}/api/sources`, { cache: "no-store" });
-    const js: any = await r.json();
+    const js: any = await getJson("/api/sources");
     const arr: any[] = Array.isArray(js)
       ? js
       : Array.isArray(js?.data)
@@ -304,12 +308,9 @@ export default function DashboardPage() {
       return;
     }
     try {
-      const r = await fetch(
-        `${API_BASE}/api/metrics/names?source_name=${encodeURIComponent(sn)}`,
-        { cache: "no-store" },
-      );
-      if (!r.ok) throw new Error(String(r.status));
-      const names: string[] = await r.json();
+      const names = await getJson<string[]>("/api/metrics/names", {
+        source_name: String(sn),
+      });
       setMetricOptions(names || []);
       if (names?.length && !names.includes(metric)) setMetric(names[0]);
       console.log("metric names for", sn, "→", names);
@@ -378,19 +379,18 @@ export default function DashboardPage() {
           throw new Error("Start must be on/before End.");
         setLoading(true);
 
-        const qs = new URLSearchParams({
+        const params: Record<string, string> = {
           source_name: String(sourceName),
           metric: String(metric),
-        });
-        if (start) qs.set("start_date", start);
-        if (end) qs.set("end_date", end);
+        };
+        if (start) params.start_date = start;
+        if (end) params.end_date = end;
 
-        const r = await fetch(
-          `${API_BASE}/api/metrics/daily?${qs.toString()}`,
-          { signal: ctrl.signal },
+        const js = await getJson<any>(
+          "/api/metrics/daily",
+          params,
+          ctrl.signal,
         );
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const js = await r.json();
         const arr: Row[] = Array.isArray(js) ? js : (js.items ?? js.data ?? []);
         arr.sort((a, b) => (getDate(a) || "").localeCompare(getDate(b) || ""));
         setRows(arr);
@@ -480,27 +480,22 @@ export default function DashboardPage() {
       const contentType = isJson ? "application/json" : "text/csv";
       const body = await file.text();
 
-      const qsUp = new URLSearchParams({
+      const url = buildUrl("/api/ingest", {
         source_name: String(sourceName || "demo-source"),
         default_metric: String(metric || "events_total"),
       });
-      const resp = await fetch(`${API_BASE}/api/ingest?${qsUp.toString()}`, {
+      const js = await request<any>(url, {
         method: "POST",
         headers: { "Content-Type": contentType },
         body,
       });
-
-      const js = await resp.json().catch(() => ({}));
-      if (!resp.ok || js?.ok === false) {
-        throw new Error(
-          js?.error?.message || `Upload failed (HTTP ${resp.status})`,
-        );
+      if (js?.ok === false) {
+        throw new Error(js?.error?.message || "Upload failed");
       }
 
-      await fetch(`${API_BASE}/api/kpi/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_name: sourceName, metric }),
+      await postJson("/api/kpi/run", {
+        source_name: sourceName,
+        metric,
       }).catch(() => {});
 
       setUploadMsg(
@@ -537,20 +532,37 @@ export default function DashboardPage() {
     saveAs(dataUrl, fname);
   }
 
-  function onExportCsv() {
-    const qs = new URLSearchParams({
-      source_name: String(sourceName),
-      metric: String(metric),
-    });
-    if (start) qs.set("start", start);
-    if (end) qs.set("end", end);
-    const url = `${API_BASE}/api/metrics/export/csv?${qs.toString()}`;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `metric_${metric}_${sourceName}_${start}_${end}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  async function onExportCsv() {
+    try {
+      const url = buildUrl("/api/metrics/export/csv", {
+        source_name: String(sourceName),
+        metric: String(metric),
+        start,
+        end,
+      });
+      const resp = await fetch(url, {
+        headers: withAuthHeaders(),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(text || `Export failed (HTTP ${resp.status})`);
+      }
+      const blob = await resp.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `metric_${metric}_${sourceName}_${start}_${end}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Export failed");
+    }
+  }
+
+  function handleSignOut() {
+    authApi.logout();
+    window.location.replace("/");
   }
 
   /* ---------- Reset handler ---------- */
@@ -655,6 +667,16 @@ export default function DashboardPage() {
           Reset
         </button>
       }
+      SignOut={
+        <button
+          data-testid="btn-signout"
+          className="sd-btn"
+          type="button"
+          onClick={handleSignOut}
+        >
+          Sign out
+        </button>
+      }
       Extra={
         <div className="sd-stack row" style={{ gap: 10, alignItems: "center" }}>
           <select
@@ -735,7 +757,7 @@ export default function DashboardPage() {
           <button
             type="button"
             className="sd-btn ghost"
-            onClick={onExportPng}
+          onClick={() => void onExportPng()}
             data-testid="btn-export-png"
           >
             Export PNG
@@ -743,7 +765,7 @@ export default function DashboardPage() {
           <button
             type="button"
             className="sd-btn ghost"
-            onClick={onExportCsv}
+            onClick={() => void onExportCsv()}
             data-testid="btn-export-csv"
           >
             Export CSV
@@ -771,15 +793,6 @@ export default function DashboardPage() {
               {uploadMsg}
             </span>
           )}
-
-          {/* Reload sources button */}
-          <button
-            className="sd-btn ghost"
-            type="button"
-            onClick={() => void loadSources()}
-          >
-            Reload sources
-          </button>
         </div>
       }
     />

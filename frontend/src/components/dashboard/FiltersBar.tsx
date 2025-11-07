@@ -9,6 +9,7 @@ export type FiltersBarProps = {
   Distinct?: React.ReactNode;
   Apply: React.ReactNode;
   Reset: React.ReactNode;
+  SignOut?: React.ReactNode;
   Extra?: React.ReactNode;
 };
 
@@ -28,7 +29,10 @@ export const FiltersBar: React.FC<FiltersBarProps> = (p) => {
       <Labeled label="End">{p.End}</Labeled>
       {p.Distinct ? <Labeled label="Distinct Field (opt)">{p.Distinct}</Labeled> : null}
       {p.Apply}
-      {p.Reset}
+      <div className="sd-stack row" style={{ gap: 8 }}>
+        {p.Reset}
+        {p.SignOut}
+      </div>
       {p.Extra}
     </Stack>
   );

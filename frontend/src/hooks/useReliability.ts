@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReliabilityDetails } from "../components/DetailsDrawer";
+import { getJson } from "../lib/api";
 
 interface ReliabilitySummary { mae?: number; rmse?: number; mape?: number; smape?: number }
 
@@ -46,28 +47,16 @@ export function useReliability({ sourceName, metric }: UseReliabilityParams) {
     setLoading(true);
     setError(null);
 
-    const params = new URLSearchParams({ source_name: sourceName, metric });
-    const url = `/api/forecast/reliability?${params.toString()}`;
     const key = `${sourceName}|${metric}`;
     lastKey.current = key;
 
     const fetchReliability = async () => {
-      console.debug("useReliability → fetch", url);
+      console.debug("useReliability → fetch", { sourceName, metric });
       try {
-        const response = await fetch(url);
-
-        if (!response.ok) {
-          let message = `Request failed with status ${response.status}`;
-          try {
-            const body = await response.json();
-            message = body?.detail ?? message;
-          } catch {
-            // ignore JSON parse failure for error payload
-          }
-          throw new Error(message);
-        }
-
-        const raw = await response.json();
+        const raw = await getJson(
+          "/api/forecast/reliability",
+          { source_name: sourceName, metric },
+        );
         if (cancelled || lastKey.current !== key) return;
         const normalized = normalizeReliabilityPayload(raw);
         setData(normalized);

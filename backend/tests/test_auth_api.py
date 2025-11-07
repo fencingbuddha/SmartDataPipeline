@@ -34,3 +34,21 @@ def test_refresh_ok_then_new_access():
 def test_refresh_rejects_garbage_token():
     r = client.post("/api/auth/refresh", json={"refresh_token": "not-a-jwt"})
     assert r.status_code in (400,401,403)
+
+
+def test_signup_creates_user_and_allows_login():
+    email = "newuser@example.com"
+    password = "newpass123"
+
+    r = client.post("/api/auth/signup", json={"email": email, "password": password})
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert "access_token" in data and "refresh_token" in data
+
+    login = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert login.status_code == 200, login.text
+
+
+def test_signup_rejects_duplicate_email():
+    r = client.post("/api/auth/signup", json={"email": "demo@example.com", "password": "demo123"})
+    assert r.status_code in (400, 409)
