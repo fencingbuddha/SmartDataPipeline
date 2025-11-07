@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str | None = None
     TEST_DATABASE_URL: str | None = None
 
+    # --- Auth / JWT ---
+    JWT_SECRET: str = "dev"
+    JWT_ALG: str = "HS256"
+    JWT_ACCESS_MIN: int = 30
+    JWT_REFRESH_DAYS: int = 7
+
     class Config:
         # .env should live in the same working directory you launch uvicorn from (usually backend/.env)
         env_file = ".env"
