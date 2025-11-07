@@ -1,12 +1,12 @@
-import React from "react";
+import type { FC, HTMLAttributes, JSX } from "react";
 
-export type TextProps = React.HTMLAttributes<HTMLElement> & {
+export type TextProps = HTMLAttributes<HTMLElement> & {
   as?: keyof JSX.IntrinsicElements;
   variant?: "h1" | "h2" | "h3" | "body" | "small" | "mono";
   muted?: boolean;
 };
 
-export const Text: React.FC<TextProps> = ({ as = "span", variant = "body", muted = false, className = "", ...rest }) => {
+export const Text: FC<TextProps> = ({ as = "span", variant = "body", muted = false, className = "", ...rest }) => {
   const Tag: any = as;
   const variantClass =
     variant === "h1" ? "h1 sd-heading" :

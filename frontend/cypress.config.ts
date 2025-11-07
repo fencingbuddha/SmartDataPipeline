@@ -15,6 +15,12 @@ export default defineConfig({
     video: false,
     screenshotOnRunFailure: true,
   },
+  env: {
+    API_BASE_URL: 'http://127.0.0.1:8000',
+    AUTH_EMAIL: 'demo@example.com',
+    AUTH_PASSWORD: 'demo123',
+    AUTH_STORAGE_PREFIX: 'sdp_',
+  },
   screenshotsFolder: 'cypress/screenshots',
   trashAssetsBeforeRuns: true,
 });

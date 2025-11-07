@@ -4,6 +4,11 @@ class LoginIn(BaseModel):
     email: EmailStr
     password: str
 
+
+class SignupIn(BaseModel):
+    email: EmailStr
+    password: str
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str

@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect} from "react";
 import MetricDailyChart from "./MetricDailyChart";
 import { Card, Stack, Tile, Text } from "../ui";
-import { buildUrl } from "../lib/api";
+import { buildUrl, getJson, tokenStore } from "../lib/api";
 import { useMetricDaily } from "../hooks/useMetricDaily";
 import { useAnomalies } from "../hooks/useAnomalies";
 import { useForecast } from "../hooks/useForecast";
@@ -20,6 +20,14 @@ type Row = {
 type Source = { id: number | string; name: string };
 
 const METRIC_SUGGESTIONS = ["events_total", "errors_total", "revenue", "signups", "sessions"];
+
+const authHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  if (tokenStore.access) {
+    headers.Authorization = `Bearer ${tokenStore.access}`;
+  }
+  return headers;
+};
 
 export default function MetricDailyCard() {
   // Filters
@@ -48,8 +56,7 @@ export default function MetricDailyCard() {
 
   useOnce(async () => {
     try {
-      const r = await fetch(buildUrl("/api/sources"));
-      const js: any = await r.json();
+      const js: any = await getJson("/api/sources");
       const arr: any[] = Array.isArray(js) ? js : js?.data ?? [];
       const data: Source[] = arr.map((s: any) =>
         typeof s === "string" ? { id: s, name: s } : { id: s.id ?? s.name, name: s.name ?? String(s) }
@@ -64,9 +71,7 @@ export default function MetricDailyCard() {
   useWhen([sourceName], async () => {
     if (!sourceName) return;
     try {
-      const r = await fetch(buildUrl("/api/metrics/names", { source_name: String(sourceName) }));
-      if (!r.ok) throw new Error(String(r.status));
-      const names: string[] = await r.json();
+      const names = await getJson<string[]>("/api/metrics/names", { source_name: String(sourceName) });
       setMetricOptions(names);
       if (names.length && !names.includes(metric)) setMetric(names[0]);
     } catch {
@@ -149,7 +154,7 @@ export default function MetricDailyCard() {
         start_date: start,
         end_date: end,
       });
-      const resp = await fetch(url);
+      const resp = await fetch(url, { headers: authHeaders() });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const blob = await resp.blob();
       const a = document.createElement("a");

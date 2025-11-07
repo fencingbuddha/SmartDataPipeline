@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Card, Text } from "../../ui";
+import { getJson } from "../../lib/api";
 
 type Row = {
   metric_date?: string; date?: string; day?: string;
@@ -10,8 +11,6 @@ type Row = {
   value_count?: number; count?: number; rows?: number; n?: number;
   value_distinct?: number; distinct?: number; unique?: number;
 };
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 export default function MetricDailyTable({
   sourceName = "demo-source",
@@ -35,17 +34,15 @@ export default function MetricDailyTable({
       try {
         setLoading(true);
         setError(null);
-        const qs = new URLSearchParams({
+        const params: Record<string, string> = {
           source_name: String(sourceName),
-          metric: String(metric)
-        });
-        if (start) qs.set("start_date", start);
-        if (end) qs.set("end_date", end);
-        if (distinctField) qs.set("distinct_field", distinctField);
+          metric: String(metric),
+        };
+        if (start) params.start_date = start;
+        if (end) params.end_date = end;
+        if (distinctField) params.distinct_field = distinctField;
 
-        const r = await fetch(`${API_BASE}/api/metrics/daily?${qs.toString()}`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const js = await r.json();
+        const js = await getJson<any>("/api/metrics/daily", params);
         const arr: Row[] = Array.isArray(js) ? js : js.items ?? js.data ?? [];
         arr.sort((a, b) => (getDate(a) || "").localeCompare(getDate(b) || ""));
         setRows(arr);
