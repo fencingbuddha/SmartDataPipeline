@@ -1,119 +1,128 @@
 /// <reference types="cypress" />
-
-// Safe Cypress helpers: no hard-coded secrets, fail fast if missing,
-// and a login flow that works against the FastAPI backend in local/CI.
-
+// ***********************************************
+// This example commands.ts shows you how to
+// create various custom commands and overwrite
+// existing commands.
+//
+// For more comprehensive examples of custom
+// commands please read more here:
+// https://on.cypress.io/custom-commands
+// ***********************************************
+//
+//
+// -- This is a parent command --
+// Cypress.Commands.add('login', (email, password) => { ... })
+//
+//
+// -- This is a child command --
+// Cypress.Commands.add('drag', { prevSubject: 'element'}, (subject, options) => { ... })
+//
+//
+// -- This is a dual command --
+// Cypress.Commands.add('dismiss', { prevSubject: 'optional'}, (subject, options) => { ... })
+//
+//
+// -- This will overwrite an existing command --
+// Cypress.Commands.overwrite('visit', (originalFn, url, options) => { ... })
+//
+// declare global {
+//   namespace Cypress {
+//     interface Chainable {
+//       login(email: string, password: string): Chainable<void>
+//       drag(subject: string, options?: Partial<TypeOptions>): Chainable<Element>
+//       dismiss(subject: string, options?: Partial<TypeOptions>): Chainable<Element>
+//       visit(originalFn: CommandOriginalFn, url: string, options: Partial<VisitOptions>): Chainable<Element>
+//     }
+//   }
+// }
 type VisitOptions = Cypress.VisitOptions;
 
-/** Read env from Cypress or window.__APP_ENV__ (fallback only for non-secrets). */
-const readEnv = (key: string): string | undefined => {
+const getEnv = (key: string, fallback: string): string => {
   const fromCypress = Cypress.env(key);
-  if (typeof fromCypress === "string" && fromCypress.trim()) return String(fromCypress);
-  // Allow frontend to expose test-only vars when running via Vite preview
-  const fromWindow = typeof window !== "undefined" ? (window as any).__APP_ENV__?.[key] : undefined;
-  if (typeof fromWindow === "string" && fromWindow.trim()) return String(fromWindow);
-  return undefined;
+  if (typeof fromCypress === "string" && fromCypress.trim()) {
+    return fromCypress;
+  }
+  const fromWindow =
+    typeof window !== "undefined"
+      ? (window as any).__APP_ENV__?.[key]
+      : undefined;
+  if (typeof fromWindow === "string" && fromWindow.trim()) {
+    return fromWindow;
+  }
+  return fallback;
 };
 
-/** Non-secret defaults are OK. */
-export const API_BASE_URL = readEnv("VITE_TEST_API_BASE") || "http://127.0.0.1:8000";
-export const AUTH_PREFIX = readEnv("VITE_AUTH_STORAGE_PREFIX") || "sdp_";
+const API_BASE_URL = getEnv("VITE_TEST_API_BASE", "");
+const AUTH_EMAIL = getEnv("VITE_TEST_AUTH_EMAIL", "");
+const AUTH_PASSWORD = getEnv("VITE_TEST_AUTH_PASSWORD", "");
+const AUTH_PREFIX = getEnv("VITE_AUTH_STORAGE_PREFIX", "sdp_");
 
-/** Secrets: NO defaults. Force explicit config via .env.cypress.local or CI. */
-export const AUTH_EMAIL = readEnv("VITE_TEST_AUTH_EMAIL");
-export const AUTH_PASSWORD = readEnv("VITE_TEST_AUTH_PASSWORD");
-
-if (!AUTH_EMAIL || !AUTH_PASSWORD) {
+if (!API_BASE_URL || !AUTH_EMAIL || !AUTH_PASSWORD) {
   throw new Error(
-    "Missing test creds: set VITE_TEST_AUTH_EMAIL and VITE_TEST_AUTH_PASSWORD in .env.cypress.local or CI secrets."
+    "Missing test creds: set VITE_TEST_API_BASE, VITE_TEST_AUTH_EMAIL and VITE_TEST_AUTH_PASSWORD (e.g., in .env.cypress)."
   );
 }
 
-/** Perform a login; if the user doesn't exist, create then login. */
-const ensureToken = (): Cypress.Chainable<{ access_token: string; refresh_token?: string }> => {
-  const loginReq = () =>
-    cy
-      .request({
-        method: "POST",
-        url: `${API_BASE_URL}/api/auth/login`,
-        headers: { "Content-Type": "application/json" },
-        body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
-        failOnStatusCode: false,
-        log: false, // don't echo creds
-      })
-      .then((res) => {
-        if (res.status === 200 && res.body?.access_token) return res.body;
-        // If login failed (e.g., 401/404), try to sign up then login again
-        return cy
-          .request({
-            method: "POST",
-            url: `${API_BASE_URL}/api/auth/signup`,
-            headers: { "Content-Type": "application/json" },
-            body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
-            failOnStatusCode: false,
-            log: false,
-          })
-          .then(() =>
-            cy
-              .request({
-                method: "POST",
-                url: `${API_BASE_URL}/api/auth/login`,
-                headers: { "Content-Type": "application/json" },
-                body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
-                log: false,
-              })
-              .then((r2) => r2.body),
-          );
-      });
-
-  return loginReq().then((body) => {
-    const token = body?.access_token as string | undefined;
-    if (!token) throw new Error("Login did not return access_token");
-    return body;
-  });
-};
-
-/** Public helper: fetch only the access token (string). */
-export const fetchToken = (): Cypress.Chainable<string> =>
-  ensureToken().then((b) => b.access_token as string);
-
-/** Convenience builder for Authorization header. */
-export const authHeader = (token: string) => ({ Authorization: `Bearer ${token}` });
-
-/** Append an auth-bypass flag to app URLs so the app doesn't auto-redirect. */
 const appendAuthParam = (target: string): string => {
   const base = Cypress.config("baseUrl") || "http://localhost:5173";
   const url = new URL(target, target.startsWith("http") ? undefined : base);
-  if (!url.searchParams.has("auth")) url.searchParams.append("auth", "off");
+  if (!url.searchParams.has("auth")) {
+    url.searchParams.append("auth", "off");
+  }
   return url.toString();
 };
 
-/** Normalize visit args to (url, options). */
+const fetchTokens = () => {
+  return cy
+    .request({
+      method: "POST",
+      url: `${API_BASE_URL}/api/auth/login`,
+      headers: { "Content-Type": "application/json" },
+      body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
+      failOnStatusCode: false,
+      log: false,
+    })
+    .then((resp) => {
+      if (resp.status === 200 && resp.body?.access_token) {
+        return resp.body;
+      }
+      // If login failed (e.g., user not found), try signup then login again
+      return cy
+        .request({
+          method: "POST",
+          url: `${API_BASE_URL}/api/auth/signup`,
+          headers: { "Content-Type": "application/json" },
+          body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
+          failOnStatusCode: false,
+          log: false,
+        })
+        .then(() =>
+          cy
+            .request({
+              method: "POST",
+              url: `${API_BASE_URL}/api/auth/login`,
+              headers: { "Content-Type": "application/json" },
+              body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
+              log: false,
+            })
+            .then((r2) => r2.body),
+        );
+    });
+};
+
 const normalizeVisitArgs = (
   url: string | Partial<VisitOptions>,
   options?: Partial<VisitOptions>,
 ) => {
-  if (typeof url === "string") return { url, options: options ?? {} };
-  const opts = { ...(url || {}) } as Partial<VisitOptions> & { url?: string };
+  if (typeof url === "string") {
+    return { url, options: options ?? {} };
+  }
+  const opts = { ...(url || {}) };
   const targetUrl = typeof opts.url === "string" ? opts.url : "/";
-  delete (opts as any).url;
+  delete opts.url;
   return { url: targetUrl, options: opts };
 };
 
-// --- Custom command: cy.login() returns the JWT access_token ---
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Cypress {
-    interface Chainable {
-      /** Returns the JWT access token obtained from the API. */
-      login(): Chainable<string>;
-    }
-  }
-}
-
-Cypress.Commands.add("login", () => fetchToken());
-
-// --- Overwrite cy.visit to inject tokens into localStorage before app loads ---
 Cypress.Commands.overwrite(
   "visit",
   (
@@ -121,22 +130,26 @@ Cypress.Commands.overwrite(
     url: string | Partial<VisitOptions>,
     options?: Partial<VisitOptions>,
   ) => {
-    const { url: targetUrl, options: visitOpts } = normalizeVisitArgs(url, options);
+    const { url: targetUrl, options: visitOpts } = normalizeVisitArgs(
+      url,
+      options,
+    );
     const finalUrl = appendAuthParam(targetUrl);
 
-    return ensureToken().then((tokens) => {
+    return fetchTokens().then((tokens) => {
       const existingOnBeforeLoad = visitOpts?.onBeforeLoad;
       const mergedOpts: Partial<VisitOptions> = {
         ...visitOpts,
         onBeforeLoad(win: Window, ...rest: any[]) {
-          try {
-            win.localStorage.setItem(`${AUTH_PREFIX}access`, tokens.access_token);
-            if (tokens.refresh_token) {
-              win.localStorage.setItem(`${AUTH_PREFIX}refresh`, tokens.refresh_token);
-            }
-          } finally {
-            existingOnBeforeLoad?.(win, ...rest);
-          }
+          win.localStorage.setItem(
+            `${AUTH_PREFIX}access`,
+            tokens.access_token,
+          );
+          win.localStorage.setItem(
+            `${AUTH_PREFIX}refresh`,
+            tokens.refresh_token,
+          );
+          existingOnBeforeLoad?.(win, ...rest);
         },
       };
 
