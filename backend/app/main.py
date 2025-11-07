@@ -1,11 +1,12 @@
 # app/main.py
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import router objects explicitly to avoid module name collisions
 from app.routers.health import router as health_router
+from app.routers.auth import router as auth_router
 from app.routers.upload import router as upload_router
 from app.routers.kpi import router as kpi_router
 from app.routers.ingest import router as ingest_router
@@ -16,6 +17,7 @@ from app.routers.metrics import router as metrics_router
 from app.routers.forecast_reliability import router as forecast_reliability_router
 from app.db.session import get_engine
 from app.db.base import Base
+from app.core.security import get_current_user
 
 app = FastAPI(title="Smart Data Pipeline", version="0.7.0")
 
@@ -43,13 +45,18 @@ def _ensure_tables() -> None:
         import logging
         logging.getLogger(__name__).exception("Failed to create tables on startup: %s", ex)
 
-# Routers are mounted at import time
+# Public routers
 app.include_router(health_router)
-app.include_router(upload_router)
-app.include_router(kpi_router)
-app.include_router(ingest_router)
-app.include_router(sources_router)
-app.include_router(forecast_router)
-app.include_router(anomaly_router)
-app.include_router(metrics_router)
-app.include_router(forecast_reliability_router)
+app.include_router(auth_router)
+
+# Private routers share the same auth dependency
+require_auth = [Depends(get_current_user)]
+
+app.include_router(kpi_router, dependencies=require_auth)
+app.include_router(ingest_router, dependencies=require_auth)
+app.include_router(upload_router, dependencies=require_auth)
+app.include_router(metrics_router, dependencies=require_auth)
+app.include_router(forecast_router, dependencies=require_auth)
+app.include_router(forecast_reliability_router, dependencies=require_auth)
+app.include_router(anomaly_router, dependencies=require_auth)
+app.include_router(sources_router, dependencies=require_auth)

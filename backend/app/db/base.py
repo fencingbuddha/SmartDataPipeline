@@ -13,6 +13,7 @@ _model_modules = [
     "source",    # then singular
     "clean_events",
     "raw_events",
+    "user",
 ]
 
 for _mod in _model_modules:
