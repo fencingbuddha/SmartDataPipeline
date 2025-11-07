@@ -71,3 +71,5 @@ pnpm-debug.log*
 # coverage artifacts
 backend/.coverage
 backend/htmlcov/
+backend/.env
+backend/.env
