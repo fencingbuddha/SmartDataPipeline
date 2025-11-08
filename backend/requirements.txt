@@ -1,6 +1,7 @@
 # --- Web / ASGI ---
 fastapi>=0.111,<1.0
 uvicorn[standard]>=0.30,<1.0
+-c constraints.txt
 
 # --- Data / ETL ---
 pandas>=2.2,<3.0
