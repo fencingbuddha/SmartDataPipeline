@@ -134,7 +134,7 @@ body {
   font-weight: 600;
   font-size: var(--sd-text-sm);
   cursor: pointer;
-  color: #fff;
+  color: #050b1a;
   background: var(--sd-color-primary);
   transition: transform 0.06s ease, background 0.2s ease, border-color 0.2s ease;
 }

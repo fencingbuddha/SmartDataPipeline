@@ -634,6 +634,7 @@ export default function DashboardPage() {
           value={start}
           onChange={(e) => setStart(e.target.value)}
           max={end || undefined}
+          aria-label="Start date"
         />
       }
       End={
@@ -643,6 +644,7 @@ export default function DashboardPage() {
           value={end}
           onChange={(e) => setEnd(e.target.value)}
           min={start || undefined}
+          aria-label="End date"
         />
       }
       Apply={
@@ -683,6 +685,7 @@ export default function DashboardPage() {
             data-testid="quick-range"
             value={dateRange}
             onChange={(e) => setDateRange(e.target.value as any)}
+            aria-label="Quick range"
           >
             <option value="7">Last 7 days</option>
             <option value="14">Last 14 days</option>
@@ -700,6 +703,7 @@ export default function DashboardPage() {
               setWindowN(Math.max(3, Math.min(60, Number(e.target.value) || 7)))
             }
             style={{ width: 64 }}
+            aria-label="Rolling window days"
           />
 
           <label className="small sd-muted">z≥</label>
@@ -714,6 +718,7 @@ export default function DashboardPage() {
               setZThresh(Math.max(0, Math.min(6, Number(e.target.value) || 3)))
             }
             style={{ width: 64 }}
+            aria-label="Z-score threshold"
           />
 
           <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
