@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.metric_daily import MetricDaily
 from app.models.source import Source
+from app.observability.instrument import log_job
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ def _rolling_zscores_prior_window(values: Sequence[Optional[float]], window: int
     return z
 
 
+@log_job("anomaly.detect")
 def detect_anomalies(
     session: Session,
     *,

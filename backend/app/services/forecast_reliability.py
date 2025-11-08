@@ -13,6 +13,7 @@ from app.models.forecast_reliability import (
     ForecastReliabilityFold,
 )
 from app.models.source import Source
+from app.observability.instrument import log_job
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def get_latest_reliability(
     return db.execute(stmt).scalars().first()
 
 
+@log_job("forecast.reliability")
 def run_reliability(
     db: Session,
     source_name: str,

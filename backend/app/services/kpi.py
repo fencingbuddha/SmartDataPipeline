@@ -5,10 +5,12 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from app.models import CleanEvent, MetricDaily, Source
 from typing import Optional, Tuple, Dict, Any
+from app.observability.instrument import log_job
 
 def _utc_floor(d: date) -> datetime:
     return datetime.combine(d, time(0, 0, 0, tzinfo=timezone.utc))
 
+@log_job("kpi.run_daily")
 def run_daily_kpis(
     db: Session,
     start: date | None = None,
@@ -247,6 +249,7 @@ def _min_max_ts_for_metric(
     )
     return q.one()
 
+@log_job("kpi.run_metric")
 def run_kpi_for_metric(
     db: Session,
     *,

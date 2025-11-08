@@ -57,6 +57,12 @@ const AUTH_EMAIL = getEnv("VITE_TEST_AUTH_EMAIL", "");
 const AUTH_PASSWORD = getEnv("VITE_TEST_AUTH_PASSWORD", "");
 const AUTH_PREFIX = getEnv("VITE_AUTH_STORAGE_PREFIX", "sdp_");
 
+if (!API_BASE_URL || !AUTH_EMAIL || !AUTH_PASSWORD) {
+  throw new Error(
+    "Missing test creds: set VITE_TEST_API_BASE, VITE_TEST_AUTH_EMAIL and VITE_TEST_AUTH_PASSWORD (e.g., in .env.cypress)."
+  );
+}
+
 const appendAuthParam = (target: string): string => {
   const base = Cypress.config("baseUrl") || "http://localhost:5173";
   const url = new URL(target, target.startsWith("http") ? undefined : base);
@@ -71,20 +77,36 @@ const fetchTokens = () => {
     .request({
       method: "POST",
       url: `${API_BASE_URL}/api/auth/login`,
+      headers: { "Content-Type": "application/json" },
       body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
       failOnStatusCode: false,
+      log: false,
     })
     .then((resp) => {
       if (resp.status === 200 && resp.body?.access_token) {
         return resp.body;
       }
+      // If login failed (e.g., user not found), try signup then login again
       return cy
         .request({
           method: "POST",
           url: `${API_BASE_URL}/api/auth/signup`,
+          headers: { "Content-Type": "application/json" },
           body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
+          failOnStatusCode: false,
+          log: false,
         })
-        .its("body");
+        .then(() =>
+          cy
+            .request({
+              method: "POST",
+              url: `${API_BASE_URL}/api/auth/login`,
+              headers: { "Content-Type": "application/json" },
+              body: { email: AUTH_EMAIL, password: AUTH_PASSWORD },
+              log: false,
+            })
+            .then((r2) => r2.body),
+        );
     });
 };
 

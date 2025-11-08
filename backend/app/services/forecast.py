@@ -17,6 +17,7 @@ from app.models.metric_daily import MetricDaily
 from app.models.source import Source
 from app.models.forecast_results import ForecastResults
 from app.models.forecast_model import ForecastModel
+from app.observability.instrument import log_job
 
 def fetch_metric_series(db: Session, source_name: str, metric: str, start: date|None=None, end: date|None=None) -> pd.Series:
     q = (db.query(MetricDaily)
@@ -105,6 +106,7 @@ def write_forecast(db: Session, source_id: int, metric: str, df: pd.DataFrame, m
         rec.model_version = model_version
     db.commit()
 
+@log_job("forecast.run")
 def run_forecast(db: Session, source_name: str, metric: str, horizon_days: int = 7) -> int:
     source = db.query(Source).filter_by(name=source_name).one()
     s = fetch_metric_series(db, source_name, metric)

@@ -1,8 +1,17 @@
 /// <reference types="node" />
 import process from 'node:process';
-import 'dotenv/config'; // <-- loads frontend/.env.cypress for Cypress runs
+import { config as loadEnv } from 'dotenv';
 import { defineConfig } from 'cypress';
 import getCompareSnapshotsPlugin from 'cypress-image-diff-js/plugin';
+
+loadEnv({ path: '.env.cypress', override: true });
+
+const {
+  VITE_TEST_API_BASE,
+  VITE_TEST_AUTH_EMAIL,
+  VITE_TEST_AUTH_PASSWORD,
+  VITE_AUTH_STORAGE_PREFIX,
+} = process.env;
 
 export default defineConfig({
   e2e: {
@@ -16,10 +25,10 @@ export default defineConfig({
     video: false,
     screenshotOnRunFailure: true,
     env: {
-      API_BASE_URL: process.env.API_BASE_URL,
-      AUTH_EMAIL: process.env.AUTH_EMAIL,
-      AUTH_PASSWORD: process.env.AUTH_PASSWORD,
-      AUTH_STORAGE_PREFIX: process.env.AUTH_STORAGE_PREFIX ?? 'sdp_',
+      VITE_TEST_API_BASE,
+      VITE_TEST_AUTH_EMAIL,
+      VITE_TEST_AUTH_PASSWORD,
+      VITE_AUTH_STORAGE_PREFIX: VITE_AUTH_STORAGE_PREFIX ?? 'sdp_',
     },
   },
   screenshotsFolder: 'cypress/screenshots',
