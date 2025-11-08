@@ -9,34 +9,27 @@ import time
 from datetime import date, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.main import app
 from app.db.session import SessionLocal
 from app.models.forecast_results import ForecastResults as ForecastResultModel
 
 pytestmark = pytest.mark.uat
-client = TestClient(app)
 
 SOURCE = "uat-source"
 METRIC = "events_total"
 
 
-def ensure_source() -> None:
+def ensure_source(db_session) -> None:
     """Insert the source if it doesn't exist."""
-    db = SessionLocal()
-    try:
-        db.execute(
-            text("INSERT INTO sources(name) VALUES (:n) ON CONFLICT (name) DO NOTHING"),
-            {"n": SOURCE},
-        )
-        db.commit()
-    finally:
-        db.close()
+    db_session.execute(
+        text("INSERT INTO sources(name) VALUES (:n) ON CONFLICT (name) DO NOTHING"),
+        {"n": SOURCE},
+    )
+    db_session.commit()
 
 
-def upload_history_and_compute_kpis(days: int = 60) -> None:
+def upload_history_and_compute_kpis(client, days: int = 60) -> None:
     """
     Seed N days of daily data via the public upload endpoint,
     then run KPI aggregation so MetricDaily has training data.
@@ -56,9 +49,9 @@ def upload_history_and_compute_kpis(days: int = 60) -> None:
     assert r_kpi.status_code in (200, 201, 202), f"KPI run failed: {r_kpi.status_code} {r_kpi.text}"
 
 
-def test_forecast_persists_results():
-    ensure_source()
-    upload_history_and_compute_kpis(days=60)
+def test_forecast_persists_results(client, db_session):
+    ensure_source(db_session)
+    upload_history_and_compute_kpis(client, days=60)
 
     resp = client.post(
         "/api/forecast/run",
@@ -69,23 +62,19 @@ def test_forecast_persists_results():
         print("DEBUG forecast/run body:", resp.text)
     assert resp.status_code in (200, 202)
 
-    db = SessionLocal()
-    try:
-        future_start = date.today() + timedelta(days=1)
-        found = 0
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            rows = (
-                db.query(ForecastResultModel)
-                .filter(ForecastResultModel.metric == METRIC)
-                .filter(ForecastResultModel.target_date >= future_start)
-                .all()
-            )
-            found = len(rows)
-            if found >= 1:
-                break
-            time.sleep(0.1)
+    future_start = date.today() + timedelta(days=1)
+    found = 0
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        rows = (
+            db_session.query(ForecastResultModel)
+            .filter(ForecastResultModel.metric == METRIC)
+            .filter(ForecastResultModel.target_date >= future_start)
+            .all()
+        )
+        found = len(rows)
+        if found >= 1:
+            break
+        time.sleep(0.1)
 
-        assert found >= 1, "No forecast rows found in forecast_results"
-    finally:
-        db.close()
+    assert found >= 1, "No forecast rows found in forecast_results"

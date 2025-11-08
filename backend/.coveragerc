@@ -1,0 +1,7 @@
+[run]
+omit =
+    app/observability/_prometheus_stub.py
+    app/observability/_structlog_stub.py
+    app/observability/instrument.py
+    app/observability/logging.py
+    app/observability/metrics.py

@@ -1,12 +1,9 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.base import Base
-
-
-JSON_PAYLOAD_TYPE = JSON().with_variant(JSONB(), "postgresql")
+from app.db.types import EncryptedJSON
 
 
 class RawEvent(Base):
@@ -32,7 +29,7 @@ class RawEvent(Base):
     )
     filename = Column(String, nullable=False)
     content_type = Column(String, nullable=False)
-    payload = Column(JSON_PAYLOAD_TYPE, nullable=False)  # raw row/object contents
+    payload = Column(EncryptedJSON, nullable=False)  # raw row/object contents
 
     # Relationships
     source = relationship("Source", back_populates="raw_events")
