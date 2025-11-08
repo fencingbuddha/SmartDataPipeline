@@ -11,12 +11,12 @@ from app.db.session import get_db
 from app.schemas.common import ok, fail, ResponseMeta
 
 try:
-    from app.services.metrics import fetch_metric_daily_as_df  # type: ignore
+    from app.services.metrics_fetch import fetch_metric_daily_as_df  # type: ignore
 except Exception:  # pragma: no cover
     fetch_metric_daily_as_df = None  # type: ignore
 
 # Always keep DB fallback
-from app.services.metrics import fetch_metric_daily  # type: ignore
+from app.services.metrics_fetch import fetch_metric_daily  # type: ignore
 from app.models import source as models_source  # type: ignore
 
 router = APIRouter(prefix="/api/metrics/anomaly", tags=["anomaly"])

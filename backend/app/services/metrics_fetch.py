@@ -1,57 +1,37 @@
-# app/services/metrics.py
+# app/services/metrics_fetch.py
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
 from datetime import date
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional
 
-from sqlalchemy import and_, select, join
+from sqlalchemy import and_, join, select
 from sqlalchemy.orm import Session
 
 from app.models.metric_daily import MetricDaily
 from app.models.source import Source
+from app.schemas.metrics import MetricDailyRow
 
 
-@dataclass
-class MetricDailyRow(dict):
-    """
-    Dict-like row that ALSO supports attribute access (r.value, r.metric_date, ...).
-    """
-    __slots__ = ()
-
-    def __init__(self, **kwargs):
-        # Accept only keyword args for clarity, then init the dict
-        super().__init__(**kwargs)
-
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as ex:
-            raise AttributeError(name) from ex
-
-    def to_dict(self) -> dict:
-        return dict(self)
-
-def _normalize_sql_row(r) -> MetricDailyRow:
-    metric_date_iso = r.metric_date.isoformat() if r.metric_date else None
-    source_id = int(r.source_id) if r.source_id is not None else None
-    value_sum = float(r.value_sum) if r.value_sum is not None else None
-    value_avg = float(r.value_avg) if r.value_avg is not None else None
-    value_count = int(r.value_count) if r.value_count is not None else None
-    value_distinct = int(r.value_distinct) if r.value_distinct is not None else None
+def _normalize_sql_row(row) -> MetricDailyRow:
+    metric_date_iso = row.metric_date.isoformat() if row.metric_date else None
+    source_id = int(row.source_id) if row.source_id is not None else None
+    value_sum = float(row.value_sum) if row.value_sum is not None else None
+    value_avg = float(row.value_avg) if row.value_avg is not None else None
+    value_count = int(row.value_count) if row.value_count is not None else None
+    value_distinct = int(row.value_distinct) if row.value_distinct is not None else None
 
     return MetricDailyRow(
         metric_date=metric_date_iso,
         source_id=source_id,
-        metric=r.metric,
+        metric=row.metric,
         value_sum=value_sum,
         value_avg=value_avg,
         value_count=value_count,
         value_distinct=value_distinct,
-        value=value_sum,  # by convention
+        value=value_sum,
     )
 
-# change the signature: metric is Optional
+
 def fetch_metric_daily(
     db: Session,
     *,
@@ -65,13 +45,10 @@ def fetch_metric_daily(
 ) -> List[MetricDailyRow]:
     """
     Fetch daily metric rows with flexible filtering.
-
-    If `metric` is None, no metric-name filter is applied (used by tests).
     """
     j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
-    conds = []                              # was: [MetricDaily.metric == metric]
+    conds = []
 
-    # add metric filter only when provided
     if metric is not None:
         conds.append(MetricDaily.metric == metric)
 
@@ -114,7 +91,7 @@ def fetch_metric_daily(
 def fetch_metric_daily_as_dicts(
     db: Session,
     *,
-    metric: str,
+    metric: Optional[str] = None,
     source_id: Optional[int] = None,
     source_name: Optional[str] = None,
     start_date: Optional[date] = None,
@@ -123,10 +100,9 @@ def fetch_metric_daily_as_dicts(
     order: str = "asc",
 ) -> List[dict]:
     """
-    Convenience wrapper: returns list of dicts for easy JSON serialization.
-    Used by routers.
+    Convenience wrapper for JSON serialization.
     """
-    objs = fetch_metric_daily(
+    rows = fetch_metric_daily(
         db,
         metric=metric,
         source_id=source_id,
@@ -136,7 +112,7 @@ def fetch_metric_daily_as_dicts(
         limit=limit,
         order=order,
     )
-    return [o.to_dict() for o in objs]
+    return [row.to_dict() for row in rows]
 
 
 def fetch_metric_names(db: Session, *, source_name: Optional[str] = None) -> List[str]:
@@ -144,6 +120,7 @@ def fetch_metric_names(db: Session, *, source_name: Optional[str] = None) -> Lis
     Return distinct metric names, optionally scoped by source_name.
     """
     j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
+
     if source_name:
         stmt = (
             select(MetricDaily.metric)
@@ -159,47 +136,13 @@ def fetch_metric_names(db: Session, *, source_name: Optional[str] = None) -> Lis
             .distinct()
             .order_by(MetricDaily.metric.asc())
         )
+
     rows = db.execute(stmt).all()
     return [r.metric for r in rows]
 
 
-def to_csv(rows: Iterable[Union[MetricDailyRow, dict]]) -> str:
-    """
-    Serialize rows to CSV with the expected columns.
-    Accepts either MetricDailyRow objects or dicts with equivalent keys.
-    """
-    header = [
-        "metric_date",
-        "source_id",
-        "metric",
-        "value",        # mirrors value_sum
-        "value_count",
-        "value_sum",
-        "value_avg",
-    ]
-    lines = [",".join(header)]
-
-    def _get(row, key):
-        if isinstance(row, MetricDailyRow):
-            return getattr(row, key)
-        return row.get(key)
-
-    def _fmt(v):
-        return "" if v is None else str(v)
-
-    for r in rows:
-        lines.append(
-            ",".join(
-                [
-                    _fmt(_get(r, "metric_date")),
-                    _fmt(_get(r, "source_id")),
-                    _fmt(_get(r, "metric")),
-                    _fmt(_get(r, "value")),
-                    _fmt(_get(r, "value_count")),
-                    _fmt(_get(r, "value_sum")),
-                    _fmt(_get(r, "value_avg")),
-                ]
-            )
-        )
-
-    return "\n".join(lines)
+__all__ = [
+    "fetch_metric_daily",
+    "fetch_metric_daily_as_dicts",
+    "fetch_metric_names",
+]
