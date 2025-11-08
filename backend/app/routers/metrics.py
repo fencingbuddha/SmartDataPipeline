@@ -14,10 +14,11 @@ from app.models.source import Source
 from app.models.metric_daily import MetricDaily
 
 # Service layer (used where helpful)
-from app.services.metrics import (
+from app.services.metrics_fetch import (
     fetch_metric_daily as _fetch_metric_daily,
     fetch_metric_names as _fetch_metric_names,
 )
+from app.services.metrics_calc import normalize_metric_rows, to_csv as build_metrics_csv
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -90,77 +91,7 @@ def get_metrics_daily(
         if agg and agg_norm not in ("sum", "avg", "count"):
             raise HTTPException(status_code=400, detail=f"Unsupported agg '{agg}'. Use one of: sum, avg, count")
 
-        out_rows: list[dict] = []
-        for r in rows:
-            # Convert to plain dict; support dict-like or attr-like rows.
-            row = dict(r) if hasattr(r, "keys") else {
-                "metric_date": getattr(r, "metric_date", None),
-                "source_id": getattr(r, "source_id", None),
-                "metric": getattr(r, "metric", None),
-                "value_sum": getattr(r, "value_sum", None),
-                "value_avg": getattr(r, "value_avg", None),
-                "value_count": getattr(r, "value_count", None),
-                "value_distinct": getattr(r, "value_distinct", None),
-                "value": getattr(r, "value", None),
-            }
-
-            # --- Normalize types and compute accurate averages ---
-            # Coerce sum/count to numeric types when present
-            v_sum_raw = row.get("value_sum")
-            v_cnt_raw = row.get("value_count")
-            v_avg_raw = row.get("value_avg")
-
-            v_sum = None
-            if v_sum_raw is not None:
-                try:
-                    v_sum = float(v_sum_raw)
-                except Exception:
-                    v_sum = v_sum_raw  # leave as-is if not coercible
-
-            v_cnt = None
-            if v_cnt_raw is not None:
-                try:
-                    v_cnt = int(v_cnt_raw)
-                except Exception:
-                    # try float->int if needed
-                    try:
-                        v_cnt = int(float(v_cnt_raw))
-                    except Exception:
-                        v_cnt = v_cnt_raw
-
-            # Compute average whenever possible so tests see precise 4.5, etc.
-            computed_avg = None
-            if v_sum is not None and isinstance(v_cnt, (int, float)) and v_cnt not in (None, 0):
-                try:
-                    computed_avg = float(v_sum) / float(v_cnt)
-                except Exception:
-                    computed_avg = None
-
-            # Store normalized values back
-            if v_sum is not None:
-                row["value_sum"] = v_sum
-            if isinstance(v_cnt, (int,)) and v_cnt is not None:
-                row["value_count"] = v_cnt
-
-            # Prefer computed average; otherwise coerce stored average to float if possible
-            if computed_avg is not None:
-                row["value_avg"] = computed_avg
-            else:
-                if v_avg_raw is not None:
-                    try:
-                        row["value_avg"] = float(v_avg_raw)
-                    except Exception:
-                        row["value_avg"] = v_avg_raw
-
-            # --- Set unified 'value' according to agg (default to sum) ---
-            if agg_norm == "avg":
-                row["value"] = row.get("value_avg")
-            elif agg_norm == "count":
-                row["value"] = row.get("value_count")
-            else:  # "sum"
-                row["value"] = row.get("value_sum")
-
-            out_rows.append(row)
+        out_rows = normalize_metric_rows(rows, agg=agg_norm)
 
         return {
             "ok": True,
@@ -202,66 +133,15 @@ def export_metrics_csv(
     'value' mirrors value_sum for compatibility with tests.
     """
     try:
-        j = join(MetricDaily, Source, MetricDaily.source_id == Source.id)
-        conds = [Source.name == source_name, MetricDaily.metric == metric]
-        if start_date:
-            conds.append(MetricDaily.metric_date >= start_date)
-        if end_date:
-            conds.append(MetricDaily.metric_date <= end_date)
-
-        q = (
-            select(
-                MetricDaily.metric_date,
-                MetricDaily.source_id,
-                MetricDaily.metric,
-                MetricDaily.value_sum,
-                MetricDaily.value_avg,
-                MetricDaily.value_count,
-                MetricDaily.value_distinct,
-            )
-            .select_from(j)
-            .where(and_(*conds))
-            .order_by(MetricDaily.metric_date.asc())
+        rows = _fetch_metric_daily(
+            db,
+            source_name=source_name,
+            metric=metric,
+            start_date=start_date,
+            end_date=end_date,
+            order="asc",
         )
-        rows = db.execute(q).all()
-
-        header = [
-            "metric_date",
-            "source_id",
-            "metric",
-            "value",        # mirrors value_sum
-            "value_count",
-            "value_sum",
-            "value_avg",
-        ]
-
-        out_lines: list[str] = []
-        out_lines.append(",".join(header))
-
-        for r in rows:
-            metric_date = r.metric_date.isoformat()
-            source_id = str(r.source_id)
-            metric_name = r.metric
-            value_sum = "" if r.value_sum is None else str(float(r.value_sum))
-            value_avg = "" if r.value_avg is None else str(float(r.value_avg))
-            value_count = "" if r.value_count is None else str(int(r.value_count))
-            value = value_sum  # required 'value' column equals value_sum
-
-            out_lines.append(
-                ",".join(
-                    [
-                        metric_date,
-                        source_id,
-                        metric_name,
-                        value,
-                        value_count,
-                        value_sum,
-                        value_avg,
-                    ]
-                )
-            )
-
-        csv_text = "\n".join(out_lines)
+        csv_text = build_metrics_csv(rows)
         return Response(
             content=csv_text,
             status_code=status.HTTP_200_OK,

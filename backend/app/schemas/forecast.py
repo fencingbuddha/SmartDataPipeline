@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.common import ok, fail, ResponseMeta
-from app.services.metrics import fetch_metric_daily
+from app.services.metrics_fetch import fetch_metric_daily
 from app.models import source as models_source
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
