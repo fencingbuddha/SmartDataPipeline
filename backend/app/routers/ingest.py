@@ -7,6 +7,7 @@ import io, csv, json
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+import structlog
 
 from app.db.session import get_db
 from app.schemas.common import ok, fail, ResponseMeta
@@ -184,8 +185,8 @@ async def ingest_json_or_csv(
             metrics: List[str] = stats.get("metrics") or ([] if not stats.get("metric") else [stats["metric"]])
             for m in metrics:
                 run_kpi_for_metric(db, source_name=eff_source, metric=m)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("ingest.kpi_recompute_failed", error=str(exc), source=eff_source)
 
         # Include "inserted" for back-compat
         resp = ok(
@@ -225,19 +226,20 @@ async def ingest_json_or_csv(
         inferred_source = None
         try:
             obj = json.loads(s)
-            if isinstance(obj, dict):
-                val = obj.get("source")
-                if isinstance(val, str) and val.strip():
-                    inferred_source = val.strip()
-            elif isinstance(obj, list):
-                for item in obj:
-                    if isinstance(item, dict):
-                        val = item.get("source")
-                        if isinstance(val, str) and val.strip():
-                            inferred_source = val.strip()
-                            break
-        except Exception:
-            pass
+        except json.JSONDecodeError as exc:
+            logger.warning("ingest.inline_json_parse_failed", error=str(exc))
+            obj = None
+        if isinstance(obj, dict):
+            val = obj.get("source")
+            if isinstance(val, str) and val.strip():
+                inferred_source = val.strip()
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, dict):
+                    val = item.get("source")
+                    if isinstance(val, str) and val.strip():
+                        inferred_source = val.strip()
+                        break
 
         rows_iter = iter_json_bytes(body)
         eff_source = (source_name or inferred_source or "default")
@@ -258,6 +260,16 @@ async def ingest_json_or_csv(
         s = body.decode("utf-8-sig", errors="replace").strip()
         try:
             obj = json.loads(s)
+        except json.JSONDecodeError as exc:
+            logger.warning("ingest.inline_auto_parse_failed", error=str(exc))
+            early = _require_csv_header_response(s)
+            if early is not None:
+                return early
+            rows_iter = _iter_csv_text(s)
+            eff_source = (source_name or "default")
+            synthetic_name = "inline.csv"
+            synthetic_ct = "text/csv"
+        else:
             inferred_source = None
             if isinstance(obj, dict):
                 val = obj.get("source")
@@ -274,14 +286,6 @@ async def ingest_json_or_csv(
             eff_source = (source_name or inferred_source or "default")
             synthetic_name = "inline.json"
             synthetic_ct = "application/json"
-        except Exception:
-            early = _require_csv_header_response(s)
-            if early is not None:
-                return early
-            rows_iter = _iter_csv_text(s)
-            eff_source = (source_name or "default")
-            synthetic_name = "inline.csv"
-            synthetic_ct = "text/csv"
 
     _ensure_source(db, eff_source)
 
@@ -298,8 +302,8 @@ async def ingest_json_or_csv(
         metrics: List[str] = stats.get("metrics") or ([] if not stats.get("metric") else [stats["metric"]])
         for m in metrics:
             run_kpi_for_metric(db, source_name=eff_source, metric=m)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("ingest.kpi_recompute_failed", error=str(exc), source=eff_source)
 
     # Back-compat fields here too
     resp = ok(
