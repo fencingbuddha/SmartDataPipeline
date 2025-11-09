@@ -1,1 +1,1 @@
-ecdsa==0.19.1
+# Override pins for pip installs during CI (keep non-empty for ease of use).
