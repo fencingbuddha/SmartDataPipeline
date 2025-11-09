@@ -107,7 +107,7 @@ def run_kpi(
         WHERE {" AND ".join(where_sql)}
         GROUP BY {date_expr}, clean_events.source_id, clean_events.metric
         """
-    )  # nosec B608: date_expr/sum_cast are derived from fixed dialect templates; user input is parameterized via params.
+    )  # nosec B608 date_expr/sum_cast are derived from fixed dialect templates; user input is parameterized via params.
 
     rows = db.execute(select_sql, params).mappings().all()
 
