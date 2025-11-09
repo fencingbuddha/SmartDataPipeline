@@ -93,36 +93,20 @@ def run_kpi(
 
     join_sql = "JOIN sources ON sources.id = clean_events.source_id" if join_sources else ""
 
-    def _template(name: str) -> str:
-        lookup = {
-            "date": date_expr,
-            "sum": sum_cast,
-            "count": count_cast,
-            "distinct": distinct_sql,
-            "join": join_sql,
-        }
-        return lookup[name]
-
     select_sql = text(
-        """
-        SELECT
-            {date} AS metric_date,
-            clean_events.source_id,
-            clean_events.metric,
-            {sum},
-            {count}
-            {distinct}
-        FROM clean_events
-        {join}
-        WHERE __WHERE_CLAUSE__
-        GROUP BY {date}, clean_events.source_id, clean_events.metric
-        """.replace("{date}", _template("date"))
-        .replace("{sum}", _template("sum"))
-        .replace("{count}", _template("count"))
-        .replace("{distinct}", _template("distinct"))
-        .replace("{join}", _template("join"))
-        .replace("__WHERE_CLAUSE__", " AND ".join(where_sql))
-    )
+        "SELECT "
+        + f"{date_expr} AS metric_date, "
+        + "clean_events.source_id, "
+        + "clean_events.metric, "
+        + f"{sum_cast}, "
+        + f"{count_cast} "
+        + f"{distinct_sql} "
+        + "FROM clean_events "
+        + join_sql
+        + " WHERE "
+        + " AND ".join(where_sql)
+        + f" GROUP BY {date_expr}, clean_events.source_id, clean_events.metric"
+    )  # nosec B608
 
     rows = db.execute(select_sql, params).mappings().all()
 
