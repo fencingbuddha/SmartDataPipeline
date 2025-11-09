@@ -93,7 +93,7 @@ def run_kpi(
 
     join_sql = "JOIN sources ON sources.id = clean_events.source_id" if join_sources else ""
 
-    select_sql = text(
+    select_sql = text(  # nosec B608: only internal templates inserted; inputs added via bound params
         "SELECT "
         + f"{date_expr} AS metric_date, "
         + "clean_events.source_id, "
