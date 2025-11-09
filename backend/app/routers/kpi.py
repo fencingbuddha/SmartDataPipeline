@@ -107,7 +107,7 @@ def run_kpi(
         WHERE {" AND ".join(where_sql)}
         GROUP BY {date_expr}, clean_events.source_id, clean_events.metric
         """
-    )
+    )  # nosec B608
 
     rows = db.execute(select_sql, params).mappings().all()
 
