@@ -6,11 +6,14 @@ import io, csv, json
 
 import numpy as np
 import pandas as pd
+import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 
 from app.models import Source, RawEvent, CleanEvent
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +83,8 @@ def iter_json_bytes(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
                 if isinstance(item, dict):
                     yield item
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("iter_json_bytes.array_parse_failed", error=str(exc))
     # Fallback to NDJSON
     for ln in s.splitlines():
         ln = ln.strip()
