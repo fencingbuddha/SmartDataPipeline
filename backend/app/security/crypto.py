@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 from functools import lru_cache
@@ -22,7 +23,7 @@ def _normalize_key(raw_key: str | None) -> bytes:
                 decoded = base64.urlsafe_b64decode(trimmed)
                 if len(decoded) == 32:
                     return trimmed.encode("utf-8")
-            except Exception:
+            except (ValueError, binascii.Error):
                 pass
             digest = hashlib.sha256(trimmed.encode("utf-8")).digest()
             return base64.urlsafe_b64encode(digest)
