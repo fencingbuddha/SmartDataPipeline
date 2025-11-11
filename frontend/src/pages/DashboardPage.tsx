@@ -454,7 +454,7 @@ export default function DashboardPage() {
 
     void loadOverlays();
     return () => ctrl.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [
     rows.length,
     showAnoms,

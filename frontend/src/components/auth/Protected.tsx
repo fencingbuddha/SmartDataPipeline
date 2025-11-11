@@ -57,7 +57,7 @@ export function Protected({ children }: ProtectedProps) {
         if (!authApi.isAuthed) {
           try {
             await authApi.login(BYPASS_EMAIL, BYPASS_PASSWORD);
-          } catch (loginErr) {
+          } catch {
             // If demo user doesn't exist yet, create it on the fly.
             await authApi.signup(BYPASS_EMAIL, BYPASS_PASSWORD);
           }

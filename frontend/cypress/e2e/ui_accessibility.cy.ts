@@ -126,18 +126,6 @@ const tabbableElements = (doc: Document): HTMLElement[] => {
   });
 };
 
-const describeActionable = (el: HTMLElement) => {
-  const dataId = el.getAttribute("data-testid");
-  if (dataId) return dataId;
-  if (el.matches("input[type='email']")) return "email input";
-  if (el.matches("input[type='password']")) return "password input";
-  const aria = el.getAttribute("aria-label");
-  if (aria) return aria;
-  const text = el.textContent?.trim();
-  if (text) return text;
-  return el.tagName.toLowerCase();
-};
-
 const visitLoginScreen = () => {
   cy.visit("/");
   cy.window().then((win) => {
@@ -396,7 +384,7 @@ describe("UI accessibility audit", () => {
             return `• ${type} id=${id} name=${name}`;
           })
           .join("\\n");
-        // eslint-disable-next-line no-console
+         
         console.warn("Controls missing accessible name:\\n" + details);
       }
 
