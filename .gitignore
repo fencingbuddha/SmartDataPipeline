@@ -105,3 +105,15 @@ frontend/cypress-image-diff-html-report/
 frontend/cypress-image-diff-screenshots/
 frontend/cypress/screenshots/
 frontend/cypress/snapshots/**/__diff_output__/
+
+# --- Local env & secrets ---
+**/.venv/
+**/.bandit-venv/
+.env
+
+# --- Cypress visual-diff artifacts ---
+frontend/cypress-image-diff-screenshots/
+frontend/cypress/screenshots/
+frontend/cypress/videos/
+frontend/cypress/snapshots/**/__diff_output__/
+frontend/cypress-image-diff-html-report/
