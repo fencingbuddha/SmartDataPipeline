@@ -12,7 +12,7 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   require('cypress-visual-regression/dist/commands');
   registered = true;
-} catch (_) {
+} catch {
   try {
     // Fallback: cypress-image-diff-js (exposes compareSnapshotCommand)
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -26,7 +26,7 @@ try {
       });
       registered = true;
     }
-  } catch (_) {
+  } catch {
     // ignore; we'll polyfill below
   }
 }
