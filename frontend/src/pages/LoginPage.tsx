@@ -25,7 +25,11 @@ export default function LoginPage({ onSuccess }: LoginPageProps) {
     try {
       await authApi.login(e, password);
       // Re-render the app if no callback was provided
-      onSuccess ? onSuccess() : window.location.reload();
+      if (onSuccess) {
+        onSuccess();
+      } else {
+        window.location.reload();
+      }
     } catch (err) {
       const msg =
         err instanceof Error ? err.message :
@@ -48,7 +52,11 @@ export default function LoginPage({ onSuccess }: LoginPageProps) {
     setLoading(true);
     try {
       await authApi.signup(e, password);
-      onSuccess ? onSuccess() : window.location.reload();
+      if (onSuccess) {
+        onSuccess();
+      } else {
+        window.location.reload();
+      }
     } catch (err) {
       const msg =
         err instanceof Error ? err.message :

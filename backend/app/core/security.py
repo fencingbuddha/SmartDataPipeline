@@ -4,7 +4,8 @@ from __future__ import annotations
 import datetime as dt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -60,7 +61,7 @@ def create_refresh(sub: str) -> str:
 def decode_token(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    except JWTError as e:
+    except PyJWTError as e:
         raise ValueError(str(e))
 
 def get_current_user(

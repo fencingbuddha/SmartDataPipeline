@@ -19,8 +19,8 @@ def _safe_float(v: Any) -> float:
         f = float(0.0 if v is None else v)
         if math.isfinite(f):
             return f
-    except Exception:
-        pass
+    except (TypeError, ValueError):
+        return 0.0
     return 0.0
 
 def normalize_forecast_rows(raw_rows: Iterable[Dict[str, Any]], metric: str) -> List[Dict[str, Any]]:

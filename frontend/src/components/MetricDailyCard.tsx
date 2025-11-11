@@ -386,10 +386,10 @@ export default function MetricDailyCard() {
 
 // --- tiny helpers ---
 function useOnce(fn: () => void | Promise<void>) {
-  useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { void fn();   }, []);
 }
 function useWhen(deps: any[], fn: () => void | Promise<void>) {
-  useEffect(() => { void fn(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, deps);
+  useEffect(() => { void fn();   }, deps);
 }
 function pick<T extends object, K extends keyof any>(o: T, ...ks: K[]) {
   for (const k of ks) { const v = (o as any)[k]; if (v !== undefined && v !== null) return v; }

@@ -7,12 +7,8 @@ Last Updated: 2025-10-08
 from io import BytesIO
 from datetime import date, timedelta
 import pytest
-from fastapi.testclient import TestClient
-
-from app.main import app
 
 pytestmark = pytest.mark.uat
-client = TestClient(app)
 
 
 def _unwrap_data(payload):
@@ -21,7 +17,7 @@ def _unwrap_data(payload):
     return payload
 
 
-def test_upload_empty_csv_yields_no_metrics():
+def test_upload_empty_csv_yields_no_metrics(client):
     source = "uat-source"
     metric = "events_total"
     d0 = date.today()

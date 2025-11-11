@@ -5,7 +5,7 @@ from datetime import datetime, timezone, date as Date
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import text, inspect
+from sqlalchemy import text, inspect, select, func, table, column, literal_column
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -50,66 +50,69 @@ def run_kpi(
             meta=_meta(reason="no_clean_events_table"),
         )
 
-    # Build SELECT with optional filters
-    params: Dict[str, Any] = {}
-    where_sql = ["1=1"]
-    join_sources = False
-
-    # Cross-dialect expressions
-    dialect_name = db.bind.dialect.name if db.bind is not None else "default"
-    if dialect_name == "sqlite":
-        date_expr = "DATE(clean_events.ts)"
-        sum_cast = "SUM(clean_events.value) AS value_sum"
-        count_cast = "COUNT(*) AS value_count"
-        null_int = "NULL AS value_distinct"
-    else:
-        date_expr = "(clean_events.ts AT TIME ZONE 'UTC')::date"
-        sum_cast = "SUM(clean_events.value)::float8 AS value_sum"
-        count_cast = "COUNT(*)::int AS value_count"
-        null_int = "NULL::int AS value_distinct"
-
-    if source_name:
-        join_sources = True
-        where_sql.append("sources.name = :src_name")
-        params["src_name"] = source_name
-
-    if metric:
-        where_sql.append("clean_events.metric = :metric")
-        params["metric"] = metric
-
-    # Date filters are inclusive on the DATE derived from ts at UTC
-    if start_date:
-        where_sql.append(f"{date_expr} >= :start_date")
-        params["start_date"] = start_date
-    if end_date:
-        where_sql.append(f"{date_expr} <= :end_date")
-        params["end_date"] = end_date
-
-    # DISTINCT support: tests pass distinct_field='id', which should equal row count here
-    if distinct_field == "id":
-        distinct_sql = ", COUNT(DISTINCT clean_events.id) AS value_distinct"
-    else:
-        distinct_sql = f", {null_int}"
-
-    join_sql = "JOIN sources ON sources.id = clean_events.source_id" if join_sources else ""
-
-    select_sql = text(
-        f"""
-        SELECT
-            {date_expr} AS metric_date,
-            clean_events.source_id,
-            clean_events.metric,
-            {sum_cast},
-            {count_cast}
-            {distinct_sql}
-        FROM clean_events
-        {join_sql}
-        WHERE {" AND ".join(where_sql)}
-        GROUP BY {date_expr}, clean_events.source_id, clean_events.metric
-        """
+    # Build SELECT using SQLAlchemy Core (avoids Bandit B608)
+    # Define lightweight table metadata for Core expressions
+    clean_events_tbl = table(
+        "clean_events",
+        column("ts"),
+        column("source_id"),
+        column("metric"),
+        column("value"),
+        column("id"),
+    )
+    sources_tbl = table(
+        "sources",
+        column("id"),
+        column("name"),
     )
 
-    rows = db.execute(select_sql, params).mappings().all()
+    # Cross-dialect date bucket
+    dialect_name = db.bind.dialect.name if db.bind is not None else "default"
+    if dialect_name == "sqlite":
+        metric_dt = func.DATE(clean_events_tbl.c.ts).label("metric_date")
+    else:
+        # Truncate to day in UTC for Postgres/others
+        metric_dt = func.date_trunc("day", func.timezone("UTC", clean_events_tbl.c.ts)).label("metric_date")
+
+    # Base SELECT list
+    select_cols = [
+        metric_dt,
+        clean_events_tbl.c.source_id,
+        clean_events_tbl.c.metric,
+        func.sum(clean_events_tbl.c.value).label("value_sum"),
+        func.count(literal_column("*")).label("value_count"),
+    ]
+
+    # DISTINCT support: tests pass distinct_field='id'
+    if distinct_field == "id":
+        select_cols.append(func.count(func.distinct(clean_events_tbl.c.id)).label("value_distinct"))
+    else:
+        select_cols.append(literal_column("NULL").label("value_distinct"))
+
+    # Base FROM (optional join when filtering by source_name)
+    from_clause = clean_events_tbl
+    if source_name:
+        from_clause = clean_events_tbl.join(sources_tbl, sources_tbl.c.id == clean_events_tbl.c.source_id)
+
+    stmt = select(*select_cols).select_from(from_clause)
+
+    # WHERE conditions
+    conditions = []
+    if source_name:
+        conditions.append(sources_tbl.c.name == source_name)
+    if metric:
+        conditions.append(clean_events_tbl.c.metric == metric)
+    if start_date:
+        conditions.append(metric_dt >= start_date)
+    if end_date:
+        conditions.append(metric_dt <= end_date)
+    if conditions:
+        stmt = stmt.where(*conditions)
+
+    # GROUP BY
+    stmt = stmt.group_by(metric_dt, clean_events_tbl.c.source_id, clean_events_tbl.c.metric)
+
+    rows = db.execute(stmt).mappings().all()
 
     if not rows:
         return ok(

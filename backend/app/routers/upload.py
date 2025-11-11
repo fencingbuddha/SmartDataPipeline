@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Query, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+import structlog
 
 from app.db.session import get_db
 from app.schemas.common import ok, fail, ResponseMeta
@@ -15,6 +16,7 @@ from app.services.ingestion import process_rows, iter_csv_bytes
 from app.services.kpi import run_kpi_for_metric
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
+logger = structlog.get_logger(__name__)
 
 
 def _meta(**params) -> ResponseMeta:
@@ -96,8 +98,8 @@ async def upload_csv(
         metric = stats.get("metric") or default_metric
         if metric:
             run_kpi_for_metric(db, source_name=eff_source, metric=metric)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("upload.kpi_recompute_failed", error=str(exc), source=eff_source)
 
     resp = ok(
         data={

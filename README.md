@@ -89,10 +89,16 @@ SmartDataPipeline/
 
 ---
 
-## 🌱 Environment
+## 🌱 Environment & Secrets
 
 - `DATABASE_URL` (dev/test), e.g.  
   `postgresql+psycopg2://postgres:postgres@localhost:5433/smartdata_test`
+- `DB_APP_ROLE` → expected Postgres runtime role (defaults to none; set to `sdp_app` in prod).
+- `DB_REQUIRE_SSL` → keep `true` in prod so the driver forces `sslmode=require` (set to `false` only for local labs without TLS).
+- `FORCE_HTTPS`, `TRUSTED_HOSTS`, `CONTENT_SECURITY_POLICY` → hardened FastAPI networking.
+- `APP_ENCRYPTION_KEY` → Fernet key used to encrypt `raw_events.payload` before the database ever sees it.
+
+**Production deployments:** store every secret above (plus JWT + API keys) in your secret manager (GitHub Environment secrets, AWS/GCP Secret Manager, etc.) and use GitHub OIDC when CI assumes deploy roles. `.env` files are local-only.
 
 ---
 
@@ -142,6 +148,16 @@ npm install
 npm run dev
 # Dashboard:
 # http://localhost:5173
+
+## 🚀 Production Deployment (secure)
+
+1. Run [`infra/db/roles.sql`](./infra/db/roles.sql) against your managed Postgres instance to create `sdp_migrations`, `sdp_app`, and (optionally) `sdp_readonly`.
+2. Store the following secrets in your vault (GitHub environment secrets, AWS/GCP Secret Manager, 1Password, etc.): `DATABASE_URL` (runtime role), `MIGRATION_DATABASE_URL`, `JWT_SECRET`, `APP_ENCRYPTION_KEY`, API keys, and any third-party credentials. Configure your GitHub Actions environment to retrieve them via OIDC (no long-lived cloud keys).
+3. Configure your CDN / reverse proxy for HTTPS-only traffic, TLS ≥ 1.2, and HSTS. Set `FORCE_HTTPS=true`, `TRUSTED_HOSTS=<your domains>`, and ensure the backend CSP matches your frontend origin.
+4. Deploy the backend (`uvicorn`/container) and frontend, run `pytest` plus the CI security job locally if needed.
+5. Capture evidence (`curl -Ik https://<host>/health` and `openssl s_client -connect <host>:443 -tls1_2 </dev/null`) and attach it to the release PR titled **`feat(qr4): security hardening`**.
+
+Refer to [SECURITY.md](./SECURITY.md) for the full runbook, rotation policy, and disclosure process.
 
 📥 Ingestion Usage
 
@@ -194,15 +210,13 @@ pytest -q --cov=app/services --cov-report=term-missing
 
 ♻️ CI/CD
 
-GitHub Actions runs:
+GitHub Actions jobs (see `.github/workflows/ci.yml`):
 
-✅ Linting
+- ✅ Backend unit tests (FastAPI + Postgres service)
+- ✅ Frontend build/tests
+- ✅ **Security** job: `pip-audit`, `bandit`, `npm audit --omit=dev`, and ESLint in `--max-warnings=0` mode. Treat failures as blocking.
 
-✅ Tests
-
-✅ Frontend build
-
-Workflow: .github/workflows/ci.yml
+Deployments should consume GitHub OIDC tokens instead of static cloud keys. See [SECURITY.md](./SECURITY.md) for the full checklist.
 
 📊 Agile Board
 
@@ -216,19 +230,20 @@ Sprint 3: Exports, auth, logging, accessibility/security
 
 Sprint 4: Scheduler, maintainability, portability, docs, risks
 
-🔐 Non-Functional Targets
+🔐 Security Hardening Checklist
 
-Performance: ≤10 MB ingest in ≤5s @ P95
+| Control | How |
+| --- | --- |
+| HTTPS-only + HSTS | Enable redirects on your CDN/LB, set `FORCE_HTTPS=true`, record `curl -Ik https://<host>/health` output in PRs |
+| TLS 1.2+ evidence | Attach `openssl s_client -connect <host>:443 -tls1_2 </dev/null` output to your release PR |
+| Security headers + CSP | Enabled by default via `SecurityHeadersMiddleware`; override with `CONTENT_SECURITY_POLICY` as needed |
+| Database least privilege | Apply [`infra/db/roles.sql`](./infra/db/roles.sql), set `DB_APP_ROLE=sdp_app`, point Alembic/migrations at `sdp_migrations` |
+| DB encryption | Managed Postgres already encrypts at rest; local dev must use FileVault/APFS or SQLCipher. `DB_REQUIRE_SSL=true` enforces TLS in flight. |
+| App-layer encryption | `raw_events.payload` is encrypted with Fernet (`APP_ENCRYPTION_KEY`). Rotate the key via your secret manager. |
+| Secrets | Move DB URLs, JWTs, encryption keys, API keys into GitHub Environment secrets or your cloud Secret Manager. Document rotations in PRs. |
+| CI security job | Automatically runs in GitHub Actions; do not merge if it fails. |
 
-Reliability: ≥99% uptime during evaluation
-
-Accessibility: WCAG 2.1 AA compliance
-
-Security: TLS 1.2+, encryption at rest
-
-Maintainability: ≥70% test coverage
-
-Portability: ZIP release with SQLite runtime
+When filing the QR-4 security PR, title it **`feat(qr4): security hardening`**, paste the checklist above in the PR body, and attach the `curl`/`openssl` evidence. See [SECURITY.md](./SECURITY.md) for the expanded runbook (OIDC deploys, rotation process, disclosure policy).
 
 📜 License
 MIT © 2025 Cameron Beebe

@@ -40,8 +40,11 @@ describe("Metric Daily overlays visual (@visual)", () => {
     // Lock DPR to reduce pixel-diff noise across environments
     cy.visit("/", {
       onBeforeLoad(win) {
-        // @ts-ignore
-        win.devicePixelRatio = 1;
+        Object.defineProperty(win,
+          "devicePixelRatio", {
+            get: () => 1,
+            configurable: true,
+          });
       },
     });
 
