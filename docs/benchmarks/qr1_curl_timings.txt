@@ -1,0 +1,4 @@
+---- curl timings (2025-11-11T15:09:35Z) ----
+GET /health -> code:404 time:0.001277s
+GET /api/metrics/daily -> code:403 time:0.001118s
+GET /api/forecast -> code:404 time:0.001522s
