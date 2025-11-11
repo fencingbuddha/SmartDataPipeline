@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 try:  # pragma: no cover
-    from fastapi_instrumentator import Instrumentator
+    from fastapi_instrumentator import Instrumentator  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover
     Instrumentator = None
 

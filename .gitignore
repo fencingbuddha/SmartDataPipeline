@@ -101,3 +101,7 @@ backend/htmlcov/
 
 # Cypress image diff artifacts
 frontend/cypress-image-diff-html-report/
+# Cypress visual diff artifacts
+frontend/cypress-image-diff-screenshots/
+frontend/cypress/screenshots/
+frontend/cypress/snapshots/**/__diff_output__/
