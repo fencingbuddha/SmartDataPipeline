@@ -4,8 +4,31 @@
 .vscode/
 .idea/
 
+# VS Code workspace files
+*.code-workspace
+
+# Global Python caches
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+.eggs/
+*.egg-info/
+.cache/
+
+# Virtual environments (anywhere)
+.venv/
+venv/
+.venv*/
+venv*/
+**/.venv/
+**/venv/
+**/.venv*/
+**/venv*/
+pyvenv.cfg
+
 # ---------- Python / Backend ----------
 backend/.venv/
+backend/.venv-sec/
 backend/__pycache__/
 backend/**/*.pyc
 backend/.env
@@ -71,11 +94,10 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
-# coverage artifacts
+# ---------- Coverage artifacts (deduplicated) ----------
 backend/.coverage
+backend/.coverage.*
 backend/htmlcov/
-backend/.env
-backend/.env
 
 # Cypress image diff artifacts
 frontend/cypress-image-diff-html-report/
