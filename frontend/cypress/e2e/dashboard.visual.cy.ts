@@ -1,7 +1,9 @@
 /// <reference types="cypress" />
 
+const skipVisual = Cypress.env('SKIP_VISUAL') === true || Cypress.env('SKIP_VISUAL') === 'true';
+
 // Visual baseline with forecast + anomalies toggled.
-describe("Metric Daily overlays visual (@visual)", () => {
+(skipVisual ? describe.skip : describe)("Metric Daily overlays visual (@visual)", () => {
   beforeEach(() => {
     // Stub daily KPI data so the chart is deterministic.
     cy.intercept("GET", "**/api/metrics/daily*", {
