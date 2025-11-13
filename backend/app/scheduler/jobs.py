@@ -31,7 +31,7 @@ def weekly_retrain_models() -> None:
     """
     logger.info("weekly_retrain.start")
     try:
-        # TODO: call into your retraining/backtesting pipeline here.
+        # TODO: call into retraining/backtesting pipeline here.
         logger.info("weekly_retrain.done")
     except Exception as exc:  # pragma: no cover
         logger.exception("weekly_retrain.error", extra={"error": str(exc)})

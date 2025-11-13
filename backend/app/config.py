@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     # environment: "dev" for running the app locally, "test" for pytest
     ENV: str = "dev"
 
-    # URLs come from .env; defaults are None so we can detect if you forgot them
     DATABASE_URL: str | None = None
     TEST_DATABASE_URL: str | None = None
 
