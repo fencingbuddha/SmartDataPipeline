@@ -27,6 +27,7 @@ from app.core.security import get_current_user
 from app.observability.logging import configure_logging
 from app.observability.middleware import register_request_middleware, unhandled_exception_handler
 from app.observability.metrics import router as observability_router
+from app.scheduler.setup import init_scheduler, shutdown_scheduler
 from app.security.middleware import SecurityHeadersMiddleware
 from app.config import get_settings
 
@@ -76,6 +77,22 @@ def create_app() -> FastAPI:
         except Exception as ex:  # defensive: don't block startup
             import logging
             logging.getLogger(__name__).exception("Failed to create tables on startup: %s", ex)
+
+    @app.on_event("startup")
+    async def _start_scheduler() -> None:
+        try:
+            await init_scheduler(app)
+        except Exception as ex:  # defensive: don't block startup on scheduler issues
+            import logging
+            logging.getLogger(__name__).exception("Failed to start scheduler on startup: %s", ex)
+
+    @app.on_event("shutdown")
+    async def _stop_scheduler() -> None:
+        try:
+            await shutdown_scheduler()
+        except Exception as ex:  # defensive
+            import logging
+            logging.getLogger(__name__).exception("Failed to shut down scheduler: %s", ex)
 
     # Public routers
     app.include_router(health_router)
