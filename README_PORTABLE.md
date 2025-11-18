@@ -161,3 +161,32 @@ Install Node.js from https://nodejs.org.
 The ZIP is intended for demonstration and evaluation purposes. It is not optimized for production. SQLite is used for simplicity and portability. The frontend runs on the Vite development server for easy local use.
 
 ---
+
+## 8. Regenerating the Portable ZIP (For Developers)
+
+If you make changes to the backend, frontend, or scripts and want to rebuild the portable demo, run:
+
+```bash
+./scripts/build_portable_zip.sh
+```
+
+This will create a fresh archive at:
+
+```
+dist/smartdata-portable-demo.zip
+```
+
+The ZIP includes:
+- Backend code (FastAPI)
+- Frontend code (React/Vite)
+- Environment templates (`env/`)
+- All setup and start scripts (`scripts/`)
+- This portable README
+
+It excludes:
+- `.venv` (Python virtual environment)
+- `node_modules` (frontend dependencies)
+- Git history
+- macOS metadata files
+
+This ensures a clean, lightweight archive that anyone can unzip and run locally.
