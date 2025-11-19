@@ -791,7 +791,7 @@ export default function DashboardPage() {
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
           >
-            {uploading ? "Uploading…" : "Upload CSV"}
+            {uploading ? "Uploading…" : "Upload CSV or JSON"}
           </button>
           {uploadMsg && (
             <span className="sd-text-xs sd-muted" aria-live="polite">
