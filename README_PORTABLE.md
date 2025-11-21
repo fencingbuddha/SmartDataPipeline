@@ -46,16 +46,19 @@ The first run may take a bit longer as dependencies are installed and the SQLite
 
 ## 2. Windows Instructions (PowerShell)
 
-If running on Windows, use PowerShell:
-
 ```powershell
+# (Optional) allow running local scripts in this PowerShell session
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
 # Unzip the archive
 Expand-Archive smartdata-portable-demo.zip -DestinationPath .
 cd SmartDataPipeline
 
 # Run the Windows launcher
-scripts/start_all.ps1
+.\scripts\start_all.ps1
 ```
+
+If you see an error like “running scripts is disabled on this system” when calling `npm` or `scripts/start_all.ps1`, re-run PowerShell and use the one-line execution policy override shown above. It only applies to the current PowerShell session and does not change your global settings.
 
 Then open the dashboard:
 - Frontend UI: <http://localhost:5173>
