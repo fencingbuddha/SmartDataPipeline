@@ -31,6 +31,7 @@
     "cypress-iframe": "^1.0.1",
     "cypress-image-diff-js": "^2.4.0",
     "dotenv": "^17.2.3",
+    "esbuild": "^0.27.1",
     "eslint": "^9.35.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",

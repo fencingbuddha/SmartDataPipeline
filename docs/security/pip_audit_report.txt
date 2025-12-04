@@ -1,0 +1,55 @@
+PIP AUDIT REPORT — SmartDataPipeline
+Generated for QR‑4 Security Verification
+
+Run Command:
+    pip-audit --strict --desc --progress-spinner=off
+
+Environment:
+    Python Version: 3.14.0
+    Platform: macOS (ARM64)
+    Virtual Environment: backend/.venv
+
+Summary:
+    The most recent pip-audit run reported 1 known vulnerability in a transitive
+    dependency (Starlette), with all other packages passing vulnerability checks
+    at the time of the audit.
+
+Findings:
+    • Package: starlette
+      - Installed version: 0.48.0
+      - Advisory ID: GHSA-7f5h-v6xp-fcq8
+      - Description: Denial-of-service risk via quadratic-time processing of
+        crafted HTTP Range headers in FileResponse/StaticFiles.
+      - Fix version: 0.49.1
+
+Risk Assessment:
+    • SmartDataPipeline does not expose general-purpose static file serving for
+      untrusted users. The backend primarily serves JSON APIs for a trusted React
+      frontend.
+    • FileResponse/StaticFiles endpoints are not part of ingestion, KPI,
+      anomaly, forecasting, or scheduler flows.
+    • Exploitation would require the ability to send crafted Range headers
+      repeatedly to a file-serving endpoint, which is not present in the demo
+      deployment model.
+    • Immediate upgrade is constrained by FastAPI's current Starlette pin.
+
+Mitigation & Plan:
+    • Short term (Capstone scope):
+      - Document the vulnerability and constraints in QR‑4 / AR‑5 materials.
+      - Treat as a low‑likelihood, low‑impact risk for the academic demo.
+      - Avoid creating new public-facing StaticFiles/FileResponse endpoints.
+    • Long term (Post‑project hardening):
+      - Upgrade FastAPI to a version compatible with Starlette ≥ 0.49.1.
+      - Re-run pytest, coverage, and pip-audit after upgrades.
+      - Record any new CVEs, severities, and remediation steps in this file.
+
+Breakdown (current run):
+    Total dependencies scanned: 97
+    Vulnerabilities found: 1
+    Vulnerabilities fixed: 0 (framework pin prevents immediate bump)
+    Vulnerabilities ignored: 0
+
+Status:
+    ATTENTION — Known DoS vulnerability in starlette 0.48.0 documented and
+    accepted as a constrained risk for the capstone demo, with a clear
+    remediation path once framework constraints are lifted.
