@@ -1,0 +1,38 @@
+
+
+# Smart Data Pipeline — Code Coverage Report
+Generated from pytest with coverage plugin
+Python 3.14 • 144 tests • 38.84 seconds
+
+## 1. Executive Summary
+The test suite achieved 84.14% total coverage, exceeding the required 80%. A total of 144 automated tests executed successfully with zero failures. This includes unit, integration, system, and user acceptance tests.
+
+## 2. Coverage Overview
+TOTAL STATEMENTS: 2029
+MISSED STATEMENTS: 262
+TOTAL BRANCHES: 500
+PARTIAL BRANCHES: 91
+OVERALL COVERAGE: 84.14%
+
+High‑coverage areas include ingestion, forecasting services, metrics calculators, and all database models. Security middleware and cryptography utilities also demonstrate near‑complete coverage.
+
+## 3. Moderately Covered Areas (70–89%)
+Routers such as forecast.py, metrics.py, anomaly_iforest.py, and ingest.py have moderate coverage due to complex validation and exception paths. These reflect realistic runtime variations and are considered acceptable for the MVP.
+
+## 4. Low‑Coverage Areas (<50%)
+app/db.py (0%) is deprecated and unused. scheduler/jobs.py remains difficult to test due to APScheduler internals, though critical behavior is validated by scheduler smoke tests.
+
+## 5. Explanation of Missing Lines
+Uncovered lines correspond to rare error handling paths, dependency‑failure fallbacks, dead code scheduled for removal, or APScheduler branches that would require extensive mocking.
+
+## 6. Test Categories
+- Unit tests: analytics, ETL, reliability scoring, crypto utilities.
+- Integration tests: raw ingestion → clean events → metrics pipeline.
+- UAT tests: ingestion, KPIs, forecasting contracts, anomaly overlays, auth flows.
+- Security tests: headers, JWT expiry, refresh logic.
+
+## 7. Compliance Statement
+The Smart Data Pipeline project meets and exceeds all course requirements for test coverage. At 84.14%, the system is well‑validated and stable for its MVP release.
+
+## 8. Post‑MVP Enhancements
+Future work may improve coverage for APScheduler paths, extend ingestion failure tests, and refine reliability scoring branch coverage.
