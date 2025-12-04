@@ -1,0 +1,10 @@
+fridaycore@Camerons-MacBook-Pro backend % source .venv/bin/activate
+(.venv) fridaycore@Camerons-MacBook-Pro backend % python - << 'PY'
+from app.services.forecast import SARIMAX, _SARIMAX_IMPORT_ERROR
+print("SARIMAX:", SARIMAX)
+print("IMPORT ERROR:", _SARIMAX_IMPORT_ERROR)
+PY
+[DB] Using sqlite:///./smartdata.db
+SARIMAX: <class 'statsmodels.tsa.statespace.sarimax.SARIMAX'>
+IMPORT ERROR: None
+(.venv) fridaycore@Camerons-MacBook-Pro backend % 
