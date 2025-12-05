@@ -81,7 +81,7 @@ The backend is organized into clear service domains:
 
 ## 4. Deployment Architecture
 
-![Deployment Diagram](./DeploymentDiagram.png)
+![System Context](./DeploymentDiagram.png)
 
 ### 4.1 Local Development
 - Backend uses **PostgreSQL**  
