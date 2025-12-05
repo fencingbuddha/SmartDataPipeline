@@ -36,37 +36,7 @@ The backend is organized into clear service domains:
 
 ### 2.3 Component Diagram
 
-```
-             +--------------------------+
-             |        React App         |
-             |  (Dashboard, Charts)     |
-             +------------+-------------+
-                          |
-                          | HTTPS + JWT
-                          v
-+------------------------------------------------------+
-|                      FastAPI                         |
-|------------------------------------------------------|
-| Routers:                                             |
-|  - /auth        - /ingest        - /kpi              |
-|  - /metrics     - /forecast      - /anomaly          |
-|                                                      |
-| Services:                                            |
-|  - ingestion.py   - kpi.py      - anomaly.py         |
-|  - forecast.py    - reliability.py                   |
-|                                                      |
-| Infrastructure:                                      |
-|  - scheduler/     - utils/      - config/            |
-|                                                      |
-+-----------------------+------------------------------+
-                        |
-                        | SQLAlchemy ORM
-                        v
-                +-----------------------+
-                |  SQLite / PostgreSQL  |
-                |  (smartdata.db)       |
-                +-----------------------+
-```
+![System Context](./Logical:ComponentDiagram.png)
 
 ---
 
